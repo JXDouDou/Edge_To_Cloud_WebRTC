@@ -1,0 +1,98 @@
+# ============================================================
+# 正式部署設定（Production Configuration）
+# ============================================================
+#
+# 部署拓撲：
+#   Edge (Pi 5, 5G)  ──WebRTC──►  EC2 Dispatcher  ──WS over Tailscale──►  5080 桌機
+#
+# 網路架構：
+#   - Signaling Server: 獨立 EC2，綁定 domain（Route53 / Cloudflare）
+#   - Edge → Signaling:   WSS（走公網，需 TLS）
+#   - Edge → Dispatcher:  WebRTC（ICE 穿透 5G NAT）
+#   - Dispatcher → Inference: WS over Tailscale（Tailscale 已加密，不需 wss）
+#
+# Tailscale 設定：
+#   1. EC2 和 5080 桌機都加入同一個 Tailscale network
+#   2. 用 `tailscale status` 查看各機器的 Tailscale hostname 或 100.x.x.x IP
+#   3. 確保 Tailscale ACL 允許 EC2 → 桌機 的 port 8765
+#   4. inference_ws_url 填 Tailscale hostname（推薦）或 Tailscale IP
+#
+# ⚠️ 重要提醒：
+#   - 此設定檔中的 domain / hostname 都是範例，部署前需替換為實際值
+#   - TURN server 對 5G symmetric NAT 很可能是必要的，建議用 coturn 自建
+#   - Signaling Server 需要 TLS 憑證（Let's Encrypt 免費）
+
+mode: production
+
+# --- Signaling Server（部署在獨立 EC2，綁 domain） ---
+signaling_host: "0.0.0.0"
+signaling_port: 8080
+# 前方建議加 nginx reverse proxy 處理 TLS:
+#   wss://signaling.yourdomain.com → ws://localhost:8080
+
+# --- Edge Device（Raspberry Pi 5 + 5G） ---
+edge:
+  id: "edge-rpi-001"
+  capture:
+    mode: "camera"                         # 使用 Pi Camera Module
+    source: "0"                            # /dev/video0（V4L2）
+    fps: 10
+    width: 1280
+    height: 720
+  preprocess:
+    roi:
+      enabled: true                        # 只擷取感興趣區域
+      x: 160
+      y: 60
+      width: 960
+      height: 600
+    jpeg_quality: 85
+    resize_width: 640                      # 縮放到 640x480 再傳送
+    resize_height: 480
+  signaling:
+    url: "wss://signaling.yourdomain.com/ws"   # ← 替換為實際 domain
+  ice_servers:
+    # STUN: 發現公網 IP（免費）
+    - urls: "stun:stun.l.google.com:19302"
+    # TURN: 5G symmetric NAT 幾乎一定需要 TURN 中繼
+    # 建議用 coturn 自建，或用商業方案（Twilio/Xirsys）
+    - urls: "turn:turn.yourdomain.com:3478"    # ← 替換為實際 TURN server
+      username: "turnuser"                     # ← 替換為實際帳密
+      credential: "turnpass"
+  failover:
+    health_check_interval: 2.0             # 每 2 秒 PING 一次
+    max_failures: 3                        # 連續 3 次失敗觸發切換
+    recovery_delay: 3.0                    # 切換後等 3 秒再連新的
+
+# --- Dispatchers（AWS EC2 × 2，走 Tailscale 連 Inference） ---
+dispatchers:
+  - id: "dispatcher-ec2-001"
+    signaling:
+      url: "wss://signaling.yourdomain.com/ws"
+    # ⬇️ Tailscale hostname 或 IP，不是內網 IP
+    # 用 `tailscale status` 在 5080 桌機上查看 hostname
+    inference_ws_url: "ws://desktop-5080.tail12345.ts.net:8765/ws"
+    ice_servers:
+      - urls: "stun:stun.l.google.com:19302"
+      - urls: "turn:turn.yourdomain.com:3478"
+        username: "turnuser"
+        credential: "turnpass"
+
+  - id: "dispatcher-ec2-002"
+    signaling:
+      url: "wss://signaling.yourdomain.com/ws"
+    inference_ws_url: "ws://desktop-5080.tail12345.ts.net:8765/ws"
+    ice_servers:
+      - urls: "stun:stun.l.google.com:19302"
+      - urls: "turn:turn.yourdomain.com:3478"
+        username: "turnuser"
+        credential: "turnpass"
+
+# --- Inference Server（5080 桌機，走 Tailscale 被 Dispatcher 連入） ---
+inference:
+  id: "inference-5080-001"
+  host: "0.0.0.0"                          # 監聽所有介面（含 Tailscale 虛擬網卡）
+  port: 8765
+  model_type: "yolo"
+  model_path: "/models/yolov8n.pt"         # ← 替換為實際模型路徑
+  device: "cuda"                           # RTX 5080

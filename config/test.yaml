@@ -1,0 +1,72 @@
+# ============================================================
+# 本機測試設定（Local Test Configuration）
+# ============================================================
+#
+# 所有元件都跑在同一台電腦（localhost），用於：
+#   - 驗證完整資料流：Edge → Dispatcher → Inference → Dispatcher → Edge
+#   - 開發和除錯新功能
+#   - 不需要 GPU、Pi、EC2 即可測試
+#
+# 使用方式：
+#   python run_local_test.py --config config/test.yaml
+#
+# 測試影片：
+#   如果沒有影片檔，先執行：
+#   python test_data/generate_test_video.py
+#   會在 test_data/ 產生 test_video.mp4
+
+mode: test
+
+# --- Signaling Server（本機） ---
+signaling_host: "0.0.0.0"
+signaling_port: 8080
+
+# --- Edge Device（使用影片檔模擬） ---
+edge:
+  id: "edge-001"
+  capture:
+    mode: "video"                            # 影片檔模式
+    source: "test_data/test_video.mp4"       # 影片路徑（相對於專案根目錄）
+    fps: 5                                   # 輸出 5 fps
+    width: 640
+    height: 480
+  preprocess:
+    roi:
+      enabled: false                         # 測試時不裁切
+      x: 0
+      y: 0
+      width: 640
+      height: 480
+    jpeg_quality: 80
+    resize_width: 0                          # 0 = 不 resize
+    resize_height: 0
+  signaling:
+    url: "ws://localhost:8080/ws"
+  ice_servers: []   # 本機測試不需要 STUN，只用 host candidates 即可
+  failover:
+    health_check_interval: 2.0
+    max_failures: 3
+    recovery_delay: 3.0
+
+# --- Dispatchers（本機兩個 process 模擬兩台 EC2） ---
+dispatchers:
+  - id: "dispatcher-001"
+    signaling:
+      url: "ws://localhost:8080/ws"
+    inference_ws_url: "ws://localhost:8765/ws"  # 本機推論
+    ice_servers: []   # 本機測試不需要 STUN
+
+  - id: "dispatcher-002"
+    signaling:
+      url: "ws://localhost:8080/ws"
+    inference_ws_url: "ws://localhost:8765/ws"
+    ice_servers: []   # 本機測試不需要 STUN
+
+# --- Inference Server（本機 dummy model） ---
+inference:
+  id: "inference-001"
+  host: "0.0.0.0"
+  port: 8765
+  model_type: "dummy"                        # 假模型，不需要 GPU
+  model_path: ""
+  device: "cpu"

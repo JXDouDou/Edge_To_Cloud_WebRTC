@@ -1,0 +1,45 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── 測試資料 ──
+test_data/*.mp4
+test_data/*.avi
+test_data/*.mkv
+
+# ── 模型檔案（太大不該進 git） ──
+*.pt
+*.onnx
+*.engine
+*.tflite
+models/
+
+# ── 日誌 ──
+*.log
+logs/
+
+# ── 敏感資料 ──
+.env
+*.pem
+*.key
+credentials/
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+
+# ── OS ──
+output_model_v1.h5

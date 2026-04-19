@@ -1,0 +1,16 @@
+# Core (all components)
+aiohttp>=3.9
+pyyaml>=6.0
+numpy>=1.24
+
+# Edge + Dispatcher (WebRTC)
+aiortc>=1.9
+
+# Edge + Inference (image processing)
+opencv-python>=4.8
+
+# Inference - uncomment as needed
+# ultralytics          # YOLO models
+# onnxruntime-gpu      # ONNX Runtime with GPU
+tensorflow-cpu         # Keras .h5 模型（CPU 推論；Windows 不支援 GPU TF >= 2.11）
+h5py                   # 讀取 .h5 模型結構（tensorflow-cpu 會一併安裝）

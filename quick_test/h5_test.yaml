@@ -1,0 +1,63 @@
+# ============================================================
+# 快速測試設定（使用 .h5 Keras 模型）
+# ============================================================
+#
+# 使用方式（由 quick_test/run.py 動態替換影片和模型路徑）：
+#   python quick_test/run.py --model output_model_v1.h5
+#   python quick_test/run.py --model output_model_v1_0.25.h5
+#   python quick_test/run.py --video edge/video/40.mp4 --model output_model_v1.h5
+#
+# 模型輸入：(88, 275, 3) float32 RGB，像素值 /255 正規化
+# 模型輸出：單一 float（回歸預測值）
+
+mode: test
+
+signaling_host: "0.0.0.0"
+signaling_port: 8080
+
+edge:
+  id: "edge-001"
+  capture:
+    mode: "video"
+    source: "edge/video/30.mp4"   # run.py 會動態替換
+    fps: 5
+    width: 640
+    height: 480
+  preprocess:
+    roi:
+      enabled: false
+      x: 0
+      y: 0
+      width: 640
+      height: 480
+    jpeg_quality: 80
+    resize_width: 0
+    resize_height: 0
+  signaling:
+    url: "ws://localhost:8080/ws"
+  ice_servers: []
+  failover:
+    health_check_interval: 2.0
+    max_failures: 3
+    recovery_delay: 3.0
+
+dispatchers:
+  - id: "dispatcher-001"
+    signaling:
+      url: "ws://localhost:8080/ws"
+    inference_ws_url: "ws://localhost:8765/ws"
+    ice_servers: []
+
+  - id: "dispatcher-002"
+    signaling:
+      url: "ws://localhost:8080/ws"
+    inference_ws_url: "ws://localhost:8765/ws"
+    ice_servers: []
+
+inference:
+  id: "inference-001"
+  host: "0.0.0.0"
+  port: 8765
+  model_type: "keras"                     # 使用 Keras .h5 模型
+  model_path: "output_model_v1.h5"        # run.py 會動態替換
+  device: "cpu"

@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python test_data/generate_test_video.py)",
+      "Bash(python -X utf8 test_data/generate_test_video.py)",
+      "Bash(PYTHONUTF8=1 PYTHONPATH=\"D:\\\\Claude_Code\\\\distributed-inference\" timeout 4 python signaling/server.py --config config/test.yaml)",
+      "Bash(pip install:*)",
+      "Bash(PYTHONUTF8=1 PYTHONPATH=\"D:\\\\Claude_Code\\\\distributed-inference\" timeout 20 python run_local_test.py --config config/test.yaml)",
+      "Read(//tmp/**)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, '.'\\); from shared.config import load_config; cfg = load_config\\('config/test.yaml'\\); print\\('ice_servers \\(edge\\):', cfg.edge.ice_servers\\); print\\('dispatchers:', [d.id for d in cfg.dispatchers]\\); print\\('inference:', cfg.inference.model_type\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, '.'\\); from shared.protocol import pack_frame, unpack_frame, Message, MsgType; from edge.capture import FrameCapture; from edge.preprocess import Preprocessor; from edge.controller import Controller; print\\('All imports OK'\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, '.'\\); from aiortc import RTCPeerConnection, RTCConfiguration, RTCIceServer, RTCSessionDescription; print\\('aiortc OK'\\); from aiohttp import web; print\\('aiohttp OK'\\); import cv2; print\\('cv2 OK'\\); print\\('cv2 version:', cv2.__version__\\)\")",
+      "Bash(set PYTHONUTF8=1)",
+      "Bash(python -c ':*)",
+      "Bash(netstat -ano)",
+      "Bash(findstr \":8080\\\\|:8765\")",
+      "Bash(cmd /c \"netstat -ano | findstr \\\\\":8080 \\\\\":8765\\\\\"\")",
+      "Bash(cmd /c \"netstat -ano | findstr 8080\")",
+      "Bash(cmd /c \"netstat -ano | findstr 8765\")",
+      "Bash(cmd /c \"tasklist | findstr python\")",
+      "Bash(pip list *)",
+      "Bash(set TF_CPP_MIN_LOG_LEVEL=2)",
+      "Bash(set TF_ENABLE_ONEDNN_OPTS=0)",
+      "Bash(python quick_test/debug_inference.py --model output_model_v1.h5 --video edge/video/30.mp4 --frames 15 --skip 30)"
+    ]
+  }
+}
