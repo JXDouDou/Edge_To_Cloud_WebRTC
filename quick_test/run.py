@@ -107,7 +107,7 @@ def make_runtime_config(video_path: str, model_path: str) -> str:
     # Keras 模板：替換模型路徑
     if norm_model:
         content = content.replace(
-            'model_path: "output_model_v1.h5"',
+            'model_path: "output_model_v1_0.25_ori.h5"',
             f'model_path: "{norm_model}"',
         )
 

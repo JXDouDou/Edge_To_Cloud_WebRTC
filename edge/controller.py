@@ -83,13 +83,21 @@ class Controller:
             - handler 的例外不會中斷其他 detection 的處理
             - 沒有對應 handler 的類別會被靜默忽略（只記 log）
         """
-        detections = result.get("result", {}).get("detections", [])
+        inner = result.get("result", {})
+        detections = inner.get("detections", [])
+        prediction = inner.get("prediction")  # 回歸模型（Keras）才會有
+
+        # 組裝 log：回歸模型顯示 prediction，偵測模型顯示 detections 數量
+        if prediction is not None:
+            extra = f"prediction={prediction:.4f}"
+        else:
+            extra = f"detections={len(detections)}"
 
         logger.info(
-            "收到結果: frame=%s, seq=%s, detections=%d",
+            "收到結果: frame=%s, seq=%s, %s",
             result.get("frame_id", "?"),
             result.get("seq", "?"),
-            len(detections),
+            extra,
         )
 
         # 逐一處理每個偵測結果

@@ -183,11 +183,12 @@ class KerasModel(BaseModel):
         # 2. Resize 到模型輸入尺寸 (W, H)——注意 cv2.resize 是 (寬, 高)
         resized = cv2.resize(img, (self._input_w, self._input_h))
 
-        # 3. BGR → RGB
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        # 3. 保持 BGR（訓練時用 cv2.imread 讀取即為 BGR，未做通道轉換，
+        #    因此推論端也必須維持 BGR，否則紅藍通道顛倒會導致預測亂掉）
+        # rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)  # ← 不要轉！
 
         # 4. 正規化 + 加 batch 維度
-        arr = rgb.astype(np.float32)
+        arr = resized.astype(np.float32)
         if self._normalize:
             arr /= 255.0
         batch = np.expand_dims(arr, axis=0)  # (1, H, W, 3)
