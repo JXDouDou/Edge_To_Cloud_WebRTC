@@ -1,14 +1,24 @@
 # ============================================================
-# 快速測試設定（使用 .h5 Keras 模型）
+# 快速測試設定（使用 Keras .h5 模型做液體體積推論）
 # ============================================================
 #
-# 使用方式（由 quick_test/run.py 動態替換影片和模型路徑）：
-#   python quick_test/run.py --model output_model_v1.h5
-#   python quick_test/run.py --model output_model_v1_0.25.h5
-#   python quick_test/run.py --video edge/video/40.mp4 --model output_model_v1.h5
+# 模型：output_model_v1_0.25_ori.h5（唯一訓練正確的版本）
+# 目的：從針筒/試管的 1920×1080 影片預測液體體積（uL）
 #
-# 模型輸入：(88, 275, 3) float32 RGB，像素值 /255 正規化
-# 模型輸出：單一 float（回歸預測值）
+# 使用方式（由 quick_test/run.py 動態替換影片和模型路徑）：
+#   python quick_test/run.py --model output_model_v1_0.25_ori.h5
+#   python quick_test/run.py --model output_model_v1_0.25_ori.h5 --video edge/video/40.mp4
+#
+# 預處理流程（來自 Code/实时演示.py，已驗證準確度 <0.5 uL）：
+#   1. 讀取 1920×1080 影格（BGR）
+#   2. YOLO ROI 裁切 [0, 0.463021, 0.744444, 0.092708, 0.511111]
+#      → 絕對座標：x=800, y=528, width=176, height=550
+#   3. Resize 到 88×275（相當於把 ROI 寬高各除 2）
+#   4. JPEG q=80 壓縮 → 透過 WebRTC 傳輸
+#   5. Inference 端解碼 → /255.0 → 模型推論（BGR，不做 BGR→RGB 轉換！）
+#
+# 模型輸入：(275, 88, 3) float32 BGR，像素值 /255 正規化
+# 模型輸出：單一 float（預測的液體體積 uL）
 
 mode: test
 
@@ -21,18 +31,18 @@ edge:
     mode: "video"
     source: "edge/video/30.mp4"   # run.py 會動態替換
     fps: 5
-    width: 640
-    height: 480
+    width: 1920                   # 影片原生解析度（video 模式下 OpenCV 會忽略此欄，
+    height: 1080                  # 但 camera 模式需要正確值）
   preprocess:
     roi:
-      enabled: false
-      x: 0
-      y: 0
-      width: 640
-      height: 480
+      enabled: true               # ★ 必開：訓練時有裁切，推論時也要裁
+      x: 800                      # YOLO bbox 在 1920×1080 下的絕對座標
+      y: 528
+      width: 176
+      height: 550
     jpeg_quality: 80
-    resize_width: 0
-    resize_height: 0
+    resize_width: 88              # ★ 必設：裁出的 176×550 要縮放到 88×275
+    resize_height: 275            #    這樣 inference 端拿到的就是模型要的尺寸
   signaling:
     url: "ws://localhost:8080/ws"
   ice_servers: []
@@ -58,6 +68,6 @@ inference:
   id: "inference-001"
   host: "0.0.0.0"
   port: 8765
-  model_type: "keras"                     # 使用 Keras .h5 模型
-  model_path: "output_model_v1.h5"        # run.py 會動態替換
+  model_type: "keras"
+  model_path: "output_model_v1_0.25_ori.h5"   # run.py 會動態替換
   device: "cpu"

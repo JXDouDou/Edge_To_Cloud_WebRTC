@@ -65,3 +65,15 @@ inference:
   model_type: "dummy"   # 不需要 GPU，回傳假偵測結果驗證管線
   model_path: ""
   device: "cpu"
+
+# --- preprocess ROI for .h5 models ---
+preprocess:
+      roi:
+        enabled: true
+        x: 832
+        y: 834
+        width: 144
+        height: 225
+      jpeg_quality: 80
+      resize_width: 88
+      resize_height: 275

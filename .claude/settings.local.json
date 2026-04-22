@@ -21,7 +21,20 @@
       "Bash(pip list *)",
       "Bash(set TF_CPP_MIN_LOG_LEVEL=2)",
       "Bash(set TF_ENABLE_ONEDNN_OPTS=0)",
-      "Bash(python quick_test/debug_inference.py --model output_model_v1.h5 --video edge/video/30.mp4 --frames 15 --skip 30)"
+      "Bash(python quick_test/debug_inference.py --model output_model_v1.h5 --video edge/video/30.mp4 --frames 15 --skip 30)",
+      "Bash(python -c ' *)",
+      "Bash(python quick_test/_batch_eval.py)",
+      "Bash(python quick_test/_preprocess_test.py)",
+      "Bash(xargs grep *)",
+      "Bash(python3)",
+      "Bash(python quick_test/_correct_eval.py)",
+      "Bash(cd /d D:\\\\Claude_Code\\\\distributed-inference)",
+      "Bash(python -c \"import tensorflow\")",
+      "Bash(python -c \"import tensorflow as tf; print\\(tf.__version__\\)\")",
+      "Bash(python quick_test/_matrix_test.py)",
+      "Bash(python quick_test/debug_inference.py --model output_model_v1_0.25_ori.h5 --video edge/video/40.mp4 --frames 3 --skip 30)",
+      "Bash(python quick_test/_reference_test.py)",
+      "Bash(python quick_test/_full_pipeline_test.py)"
     ]
   }
 }

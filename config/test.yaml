@@ -26,7 +26,7 @@ edge:
   id: "edge-001"
   capture:
     mode: "video"                            # 影片檔模式
-    source: "test_data/test_video.mp4"       # 影片路徑（相對於專案根目錄）
+    source: "Presentation.mp4"               # 影片路徑（相對於專案根目錄）
     fps: 5                                   # 輸出 5 fps
     width: 640
     height: 480

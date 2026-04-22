@@ -71,25 +71,24 @@ def apply_edge_preprocess(frame, jpeg_quality: int = 80):
 
 
 def run_keras_model(model, jpeg_bytes: bytes):
-    """對 jpeg_bytes 執行模型推論，回傳 (預測值, 模型輸入圖)。"""
+    """對 jpeg_bytes 執行模型推論，回傳 (預測值, 模型輸入圖)。
+
+    重要：直接呼叫 `model.predict()` 使用 inference/model_runner.py 的邏輯，
+    避免這裡的處理流程與正式 pipeline 不一致（之前發生過 BGR/RGB 兩邊不同步）。
+    """
     import cv2
     import numpy as np
 
+    # 用同一份 model_runner 的推論邏輯
+    result = model.predict(jpeg_bytes)
+    pred = result.get("prediction")
+
+    # 額外產生「模型實際輸入」的視覺化圖（BGR，供 cv2 顯示用）
     img = cv2.imdecode(np.frombuffer(jpeg_bytes, np.uint8), cv2.IMREAD_COLOR)
     if img is None:
-        return None, None
-
-    H, W = model._input_h, model._input_w
-    resized = cv2.resize(img, (W, H))          # 模型實際輸入（視覺化用）
-    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-    arr = rgb.astype("float32")
-    if model._normalize:
-        arr /= 255.0
-    import numpy as np
-    batch = np.expand_dims(arr, axis=0)
-    output = model._model.predict(batch, verbose=0)
-    pred = float(output[0][0])
-    return pred, resized   # resized 是 BGR，方便 cv2 顯示
+        return pred, None
+    resized = cv2.resize(img, (model._input_w, model._input_h))
+    return pred, resized
 
 
 def make_debug_panel(orig, decoded, model_input, pred_value, seq):
