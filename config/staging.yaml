@@ -1,0 +1,59 @@
+mode: staging
+# 或 mode: production  （看你 code 裡怎麼判斷）
+
+# --- Signaling Server ---
+signaling_host: "0.0.0.0"
+signaling_port: 8080
+
+# --- Edge ---
+edge:
+  id: "edge-rpi-001"
+  capture:
+    mode: "camera"
+    source: "0"
+    fps: 10
+    width: 1280
+    height: 720
+  preprocess:
+    roi:
+      enabled: true
+      x: 160
+      y: 60
+      width: 960
+      height: 600
+    jpeg_quality: 85
+    resize_width: 640
+    resize_height: 480
+  signaling:
+    url: "ws://18.178.31.155:8080/ws"     # ← 改成 ws:// + EIP
+  ice_servers:
+    - urls: "stun:stun.l.google.com:19302"
+    # 先不要配 TURN，看 5G 能不能 direct connect
+  failover:
+    health_check_interval: 2.0
+    max_failures: 3
+    recovery_delay: 3.0
+
+# --- Dispatchers ---
+dispatchers:
+  - id: "dispatcher-ec2-001"
+    signaling:
+      url: "ws://18.178.31.155:8080/ws"   # ← 改成 ws:// + EIP
+    inference_ws_url: "ws://INFERENCE_LAN_IP:8765/ws"  # ← 暫時用內網 IP，之後換 Tailscale
+    ice_servers:
+      - urls: "stun:stun.l.google.com:19302"
+  - id: "dispatcher-ec2-002"
+    signaling:
+      url: "ws://18.178.31.155:8080/ws"
+    inference_ws_url: "ws://INFERENCE_LAN_IP:8765/ws"
+    ice_servers:
+      - urls: "stun:stun.l.google.com:19302"
+
+# --- Inference ---
+inference:
+  id: "inference-5080-001"
+  host: "0.0.0.0"
+  port: 8765
+  model_type: "yolo"
+  model_path: "/models/yolov8n.pt"
+  device: "cuda"
