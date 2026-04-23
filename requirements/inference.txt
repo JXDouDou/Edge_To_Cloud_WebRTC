@@ -1,0 +1,25 @@
+# Inference Server (自有 GPU 桌機, Windows/Linux)
+# 只收 WebSocket (不跑 WebRTC)，所以不需要 aiortc
+#
+# 注意:
+#   1. 預設啟用 tensorflow-cpu + h5py 跑 Keras .h5 模型 (跨平台穩定)
+#   2. 如果要用 YOLO，取消註解 ultralytics，它會自動帶 torch (CPU 版)
+#   3. 要用 CUDA 版 torch (你有 5080)，請「不要」靠 ultralytics 自動裝，
+#      先手動從官網抓對應 CUDA 版本：
+#        https://pytorch.org/get-started/locally/
+#      例如 CUDA 12.1:
+#        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#      裝完再 pip install ultralytics --no-deps（或直接 ultralytics，它會跳過已裝的 torch）
+-r base.txt
+opencv-python>=4.8
+numpy>=1.24
+
+# --- Keras .h5 模型 (預設啟用) ---
+tensorflow-cpu>=2.13
+h5py>=3.8
+
+# --- YOLO (需要時再啟用) ---
+# ultralytics>=8.0
+
+# --- ONNX Runtime GPU (需要時再啟用) ---
+# onnxruntime-gpu>=1.17

@@ -41,5 +41,11 @@ credentials/
 .DS_Store
 Thumbs.db
 
-# ── OS ──
-output_model_v1.h5
+# ── model ──
+*.h5
+
+# ── Old Code ──
+Code/
+
+# ── Quick Test ──
+quick_test/debug_frames/

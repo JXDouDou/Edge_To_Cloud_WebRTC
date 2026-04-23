@@ -1,0 +1,11 @@
+# Edge (Raspberry Pi 5 / 其他嵌入式裝置)
+# 注意:
+#   1. opencv-python-headless: Pi 不需要 GUI，省掉 Qt 等幾百 MB
+#   2. picamera2: 只有 Raspberry Pi OS 能裝，建議用 apt 安裝而非 pip
+#        sudo apt install -y python3-picamera2
+#      如果是用 USB webcam / video 檔案，picamera2 不需要，cv2.VideoCapture 就夠
+#   3. numpy 會被 opencv 自動帶進來，但顯式寫出版本範圍更穩
+-r base.txt
+aiortc>=1.9
+opencv-python-headless>=4.8
+numpy>=1.24

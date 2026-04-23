@@ -1,0 +1,17 @@
+# 本機開發 / 整合測試用 (run_local_test.py)
+# 一次裝齊所有節點會用到的套件，同一個 venv 就能跑 5 個 component
+#
+# 用法:
+#   python -m venv venv
+#   venv\Scripts\activate      (Windows)
+#   source venv/bin/activate   (Linux/macOS)
+#   pip install -r requirements/dev.txt
+#
+# 注意: 本機測試不要裝 picamera2 (它在非 Pi 平台裝不起來)
+-r base.txt
+aiortc>=1.9
+opencv-python>=4.8
+numpy>=1.24
+tensorflow-cpu>=2.13
+h5py>=3.8
+# ultralytics>=8.0         # 想在本機試 YOLO 再打開

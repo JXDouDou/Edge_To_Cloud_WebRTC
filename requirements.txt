@@ -1,16 +1,8 @@
-# Core (all components)
-aiohttp>=3.9
-pyyaml>=6.0
-numpy>=1.24
-
-# Edge + Dispatcher (WebRTC)
-aiortc>=1.9
-
-# Edge + Inference (image processing)
-opencv-python>=4.8
-
-# Inference - uncomment as needed
-# ultralytics          # YOLO models
-# onnxruntime-gpu      # ONNX Runtime with GPU
-tensorflow-cpu         # Keras .h5 模型（CPU 推論；Windows 不支援 GPU TF >= 2.11）
-h5py                   # 讀取 .h5 模型結構（tensorflow-cpu 會一併安裝）
+# 此檔保留作為本機開發的入口，等同於 requirements/dev.txt
+# 各節點部署時請改用拆分後的檔案:
+#   requirements/signaling.txt   - Signaling EC2
+#   requirements/dispatcher.txt  - Dispatcher EC2
+#   requirements/inference.txt   - Inference 桌機 (GPU)
+#   requirements/edge.txt        - Raspberry Pi
+#   requirements/dev.txt         - 本機整合測試
+-r requirements/dev.txt

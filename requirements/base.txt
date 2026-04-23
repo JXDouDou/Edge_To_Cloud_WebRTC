@@ -1,0 +1,5 @@
+# 所有節點共用的核心依賴
+# shared/config.py 需要 yaml；shared/protocol.py 純 stdlib
+# 所有 server/client 都走 aiohttp
+aiohttp>=3.9
+pyyaml>=6.0

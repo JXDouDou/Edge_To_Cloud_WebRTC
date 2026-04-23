@@ -1,0 +1,3 @@
+# Signaling Server (EC2, t3.micro 即可)
+# 只做 WebSocket 協調，不碰影像、不碰 WebRTC media、不碰 ML
+-r base.txt

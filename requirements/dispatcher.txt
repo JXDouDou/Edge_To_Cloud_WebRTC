@@ -1,0 +1,4 @@
+# Dispatcher (EC2, t3.small 足夠)
+# 收 Edge 的 WebRTC、轉發到 Inference，不解碼不跑模型
+-r base.txt
+aiortc>=1.9
