@@ -39,21 +39,21 @@ dispatchers:
   - id: "dispatcher-ec2-001"
     signaling:
       url: "ws://18.178.31.155:8080/ws"   # ← 改成 ws:// + EIP
-    inference_ws_url: "ws://INFERENCE_LAN_IP:8765/ws"  # ← 暫時用內網 IP，之後換 Tailscale
+    inference_ws_url: "ws://laptop-inference.tail4c41d4.ts.net:8765/ws"  # ← 暫時用內網 IP，之後換 Tailscale
     ice_servers:
       - urls: "stun:stun.l.google.com:19302"
   - id: "dispatcher-ec2-002"
     signaling:
       url: "ws://18.178.31.155:8080/ws"
-    inference_ws_url: "ws://INFERENCE_LAN_IP:8765/ws"
+    inference_ws_url: "ws://laptop-inference.tail4c41d4.ts.net:8765/ws"
     ice_servers:
       - urls: "stun:stun.l.google.com:19302"
 
 # --- Inference ---
 inference:
-  id: "inference-5080-001"
+  id: "inference-laptop-001"
   host: "0.0.0.0"
   port: 8765
-  model_type: "yolo"
-  model_path: "/models/yolov8n.pt"
-  device: "cuda"
+  model_type: "keras"
+  model_path: "output_model_v1_0.25_ori.h5"
+  device: "cpu"
