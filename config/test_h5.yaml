@@ -1,0 +1,72 @@
+# ============================================================
+# 本機測試設定（Keras .h5 模型版）
+# ============================================================
+#
+# 對應 quick_test/h5_test.yaml，整合進 run_local_test.py 後使用。
+# 從針筒/試管的 1920×1080 影片預測液體體積（uL）。
+#
+# 使用方式（由 run_local_test.py 動態替換 video / model 路徑）：
+#   python run_local_test.py --model output_model_v1_0.25_ori.h5
+#   python run_local_test.py --model output_model_v1_0.25_ori.h5 --video edge/video/40.mp4
+#
+# 預處理流程（已驗證準確度 <0.5 uL）：
+#   1. 讀取 1920×1080 影格（BGR）
+#   2. ROI 裁切 → x=800, y=528, width=176, height=550
+#   3. Resize 到 88×275
+#   4. JPEG q=80 壓縮 → 透過 WebRTC 傳輸
+#   5. Inference 解碼 → /255.0 → 模型推論（保持 BGR，不轉 RGB）
+#
+# 模型輸入：(275, 88, 3) float32 BGR，像素值 /255 正規化
+# 模型輸出：單一 float（預測液體體積 uL）
+
+mode: test
+
+signaling_host: "0.0.0.0"
+signaling_port: 8080
+
+edge:
+  id: "edge-001"
+  capture:
+    mode: "video"
+    source: "edge/video/30.mp4"   # run_local_test.py 會動態替換
+    fps: 5
+    width: 1920                   # 影片原生解析度（video 模式 OpenCV 會忽略，
+    height: 1080                  # 但 camera 模式需要正確值）
+  preprocess:
+    roi:
+      enabled: true               # 必開：訓練時有裁切，推論時也要裁
+      x: 800                      # ROI 在 1920×1080 下的絕對座標
+      y: 528
+      width: 176
+      height: 550
+    jpeg_quality: 80
+    resize_width: 88              # 裁出的 176×550 縮到 88×275
+    resize_height: 275
+  signaling:
+    url: "ws://localhost:8080/ws"
+  ice_servers: []
+  failover:
+    health_check_interval: 2.0
+    max_failures: 3
+    recovery_delay: 3.0
+
+dispatchers:
+  - id: "dispatcher-001"
+    signaling:
+      url: "ws://localhost:8080/ws"
+    inference_ws_url: "ws://localhost:8765/ws"
+    ice_servers: []
+
+  - id: "dispatcher-002"
+    signaling:
+      url: "ws://localhost:8080/ws"
+    inference_ws_url: "ws://localhost:8765/ws"
+    ice_servers: []
+
+inference:
+  id: "inference-001"
+  host: "0.0.0.0"
+  port: 8765
+  model_type: "keras"
+  model_path: "output_model_v1_0.25_ori.h5"   # run_local_test.py 會動態替換
+  device: "cpu"
