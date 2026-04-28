@@ -79,17 +79,42 @@ class FrameCapture:
                 f"  可用 python test_data/generate_test_video.py 產生測試影片"
             )
 
-        # 攝影機模式下嘗試設定解析度（影片模式忽略，使用影片原始解析度）
+        # 攝影機模式下嘗試設定解析度與格式
+        # （影片模式忽略，使用影片原生解析度）
         if self.config.mode == "camera":
+            # ── 重要：指定 fourcc=MJPG ──────────────────────────
+            # OpenCV 預設使用 YUYV（未壓縮），在 USB 2.0 攝影機上頻寬會
+            # 卡住，例如 1920x1080 YUYV 通常被驅動限制到 5 fps。
+            # 換成 MJPG（相機端壓 JPEG 後傳）可大幅降低 USB 頻寬，
+            # 同樣 1920x1080 通常能跑到 30 fps。
+            # OpenCV 會自動用 libjpeg 解 MJPG 為 BGR ndarray，
+            # 對下游程式（preprocess、encode）完全透明。
+            #
+            # 不是所有相機都支援 MJPG，但若驅動支援，這個 set 會成功；
+            # 不支援時 OpenCV 會 silently 退回 YUYV，不影響運作。
+            fourcc_mjpg = cv2.VideoWriter_fourcc(*"MJPG")
+            self._cap.set(cv2.CAP_PROP_FOURCC, fourcc_mjpg)
+
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.width)
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.height)
+            # 同時告訴驅動目標 fps，讓它選擇對應的 frame interval
+            self._cap.set(cv2.CAP_PROP_FPS, self.config.fps)
 
-        # 讀取實際解析度作為日誌
+        # 讀取實際解析度與格式作為日誌
+        # （驅動可能拒絕我們要求的設定而退回別的，這裡看實際生效的值）
         actual_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        actual_fps = self._cap.get(cv2.CAP_PROP_FPS)
+        # FOURCC 是 32-bit 整數，要解回 4 個 ASCII 字元
+        fourcc_int = int(self._cap.get(cv2.CAP_PROP_FOURCC))
+        actual_fourcc = "".join(
+            chr((fourcc_int >> 8 * i) & 0xFF) for i in range(4)
+        ) if fourcc_int else "?"
         logger.info(
-            "擷取器開啟: source=%s, mode=%s, fps=%d, resolution=%dx%d",
-            src, self.config.mode, self.config.fps, actual_w, actual_h,
+            "擷取器開啟: source=%s, mode=%s, requested_fps=%d, "
+            "actual=%dx%d @ %.1f fps, fourcc=%s",
+            src, self.config.mode, self.config.fps,
+            actual_w, actual_h, actual_fps, actual_fourcc,
         )
 
     def read(self):
