@@ -84,6 +84,12 @@ class Dispatcher:
         self._peers: dict = {}     # edge_id → RTCPeerConnection
         self._channels: dict = {}  # edge_id → RTCDataChannel
 
+        # ── Debug 計數器：每 N 幀印一次 log，確認資料流動 ──
+        self._frames_received: dict = {}   # edge_id → 收到的幀數
+        self._frames_forwarded: dict = {}  # edge_id → 成功轉發到 inference 的幀數
+        self._results_returned: dict = {}  # edge_id → 從 inference 收到並回傳給 edge 的結果數
+        self._log_every = 30               # 每 30 幀 / 結果印一次進度
+
         self._running = True
 
     # ================================================================
@@ -223,11 +229,24 @@ class Dispatcher:
         def on_datachannel(channel):
             """收到 Edge 建立的 Data Channel。
 
+            注意：此回呼只代表 Edge 在 SDP 中宣告了 channel，
+            channel 實際可用要等 on("open") 觸發。
+
             Args:
                 channel: RTCDataChannel 物件，用於雙向傳輸
             """
-            logger.info("Data Channel 建立: edge=%s, label=%s", edge_id, channel.label)
+            logger.info("Data Channel 已協商: edge=%s, label=%s, state=%s",
+                        edge_id, channel.label, channel.readyState)
             self._channels[edge_id] = channel
+
+            @channel.on("open")
+            def on_open():
+                """Data Channel 真正可用時觸發（雙向通了）。"""
+                logger.info("✓ Data Channel OPEN: edge=%s（可開始收幀）", edge_id)
+
+            @channel.on("close")
+            def on_close():
+                logger.warning("Data Channel CLOSE: edge=%s", edge_id)
 
             @channel.on("message")
             def on_message(data):
@@ -240,6 +259,15 @@ class Dispatcher:
                     data: bytes（影像幀）或 str（JSON 控制訊息）
                 """
                 if isinstance(data, bytes):
+                    # ── Debug：每 N 幀印一次，確認 frame 真的進到 dispatcher ──
+                    n = self._frames_received.get(edge_id, 0)
+                    if n % self._log_every == 0:
+                        logger.info(
+                            "← 收到 frame: edge=%s, count=%d, size=%d bytes",
+                            edge_id, n, len(data),
+                        )
+                    self._frames_received[edge_id] = n + 1
+
                     # 二進位 = 影像幀 → 轉發到 Inference Server
                     asyncio.create_task(self._forward_to_inference(edge_id, data))
                 elif isinstance(data, str):
@@ -366,6 +394,14 @@ class Dispatcher:
             header, jpeg = unpack_frame(raw_frame)
             header["edge_id"] = edge_id
             await self._ws_inf.send_bytes(pack_frame(header, jpeg))
+
+            # ── Debug：每 N 幀印一次，確認轉發成功 ──
+            n = self._frames_forwarded.get(edge_id, 0)
+            if n % self._log_every == 0:
+                logger.info(
+                    "→ 已轉發到 Inference: edge=%s, count=%d", edge_id, n,
+                )
+            self._frames_forwarded[edge_id] = n + 1
         except Exception:
             logger.exception("轉發幀到 Inference 失敗: edge=%s", edge_id)
 
@@ -392,9 +428,19 @@ class Dispatcher:
                         if dc and dc.readyState == "open":
                             # 透過 Data Channel 回傳結果給 Edge
                             dc.send(msg.serialize())
+                            # ── Debug：每 N 筆印一次，確認結果有回傳 ──
+                            n = self._results_returned.get(edge_id, 0)
+                            if n % self._log_every == 0:
+                                logger.info(
+                                    "↑ 已回傳結果給 Edge: edge=%s, count=%d",
+                                    edge_id, n,
+                                )
+                            self._results_returned[edge_id] = n + 1
                         else:
+                            state = dc.readyState if dc else "no-channel"
                             logger.warning(
-                                "Edge %s 的 Data Channel 不可用，丟棄結果", edge_id
+                                "Edge %s 的 Data Channel 不可用 (state=%s)，丟棄結果",
+                                edge_id, state,
                             )
                 elif ws_msg.type in (WSMsgType.CLOSED, WSMsgType.ERROR):
                     break
