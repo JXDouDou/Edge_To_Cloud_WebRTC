@@ -12,8 +12,14 @@
     # 測試模式（本機跑全部元件）
     python edge/main.py --config config/test.yaml
 
-    # 生產模式（在 Raspberry Pi 5 上）
+    # 生產模式（在 Raspberry Pi 5 上，吃 Pi Camera）
     python edge/main.py --config config/prod.yaml
+
+    # 在 Pi 上但先用影片驗證管線（不動 yaml，CLI override）
+    python edge/main.py --config config/prod.yaml --mode video --source edge/video/30.mp4
+
+    # 反過來：本機 config 是 video，但臨時想接 USB webcam
+    python edge/main.py --config config/test.yaml --mode camera --source 0
 """
 
 import argparse
@@ -42,7 +48,7 @@ logging.getLogger("aiortc").setLevel(logging.WARNING)
 logger = logging.getLogger("edge")
 
 
-async def run(config_path: str):
+async def run(config_path: str, mode_override: str = "", source_override: str = ""):
     """Edge 主要執行流程。
 
     完整流程：
@@ -61,6 +67,17 @@ async def run(config_path: str):
     """
     cfg = load_config(config_path)
     edge = cfg.edge
+
+    # ── CLI override：允許不動 yaml 就切換影像來源 ──
+    # 部署到 Pi 時很常見：prod.yaml 寫 camera，但想先用影片驗證管線
+    if mode_override:
+        if mode_override not in ("video", "camera"):
+            raise ValueError(f"--mode 只能是 video 或 camera，收到: {mode_override}")
+        logger.info("CLI override: mode %s → %s", edge.capture.mode, mode_override)
+        edge.capture.mode = mode_override
+    if source_override:
+        logger.info("CLI override: source %s → %s", edge.capture.source, source_override)
+        edge.capture.source = source_override
 
     # ── 初始化各元件 ──
 
@@ -142,8 +159,23 @@ async def run(config_path: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Edge 裝置入口")
     parser.add_argument("--config", default="config/test.yaml", help="YAML 設定檔路徑")
+    parser.add_argument(
+        "--mode",
+        default="",
+        choices=["", "video", "camera"],
+        help="覆寫 yaml 的 capture.mode（留空 = 用 yaml 設定）",
+    )
+    parser.add_argument(
+        "--source",
+        default="",
+        help=(
+            "覆寫 yaml 的 capture.source（留空 = 用 yaml 設定）。"
+            "video 模式填影片路徑，例如 edge/video/30.mp4；"
+            "camera 模式填裝置索引，例如 0 或 /dev/video0"
+        ),
+    )
     args = parser.parse_args()
     # aiortc 在 Windows 需要 SelectorEventLoop（PreactorEventLoop 不支援 UDP/DTLS）
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(run(args.config))
+    asyncio.run(run(args.config, args.mode, args.source))
