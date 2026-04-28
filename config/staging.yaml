@@ -6,24 +6,28 @@ signaling_host: "0.0.0.0"
 signaling_port: 8080
 
 # --- Edge ---
+# 解析度設為 1920×1080，理由：
+#   1. Keras 模型訓練資料、h5_test.yaml、edge/video/*.mp4 都是 1080p
+#   2. ROI 座標 (800, 528, 176×550) 可直接沿用，不必重新選
+#   3. 攝影機 MJPG 1080p 支援到 30 fps，10 fps 完全夠用
 edge:
   id: "edge-rpi-001"
   capture:
     mode: "camera"
     source: "0"
     fps: 10
-    width: 1280
-    height: 720
+    width: 1920
+    height: 1080
   preprocess:
     roi:
       enabled: true
-      x: 160
-      y: 60
-      width: 960
-      height: 600
+      x: 800                      # 與 h5_test.yaml / staging_video.yaml 完全一致
+      y: 528
+      width: 176
+      height: 550
     jpeg_quality: 85
-    resize_width: 640
-    resize_height: 480
+    resize_width: 88              # 模型期望輸入：(275, 88, 3)
+    resize_height: 275
   signaling:
     url: "ws://18.178.31.155:8080/ws"     # ← 改成 ws:// + EIP
   ice_servers:
