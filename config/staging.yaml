@@ -39,13 +39,13 @@ dispatchers:
   - id: "dispatcher-ec2-001"
     signaling:
       url: "ws://18.178.31.155:8080/ws"   # ← 改成 ws:// + EIP
-    inference_ws_url: "ws://laptop-inference.tail4c41d4.ts.net:8765/ws"  # ← 暫時用內網 IP，之後換 Tailscale
+    inference_ws_url: "ws://mawatarilab-inference.tail4c41d4.ts.net:8765/ws"  # ← 暫時用內網 IP，之後換 Tailscale
     ice_servers:
       - urls: "stun:stun.l.google.com:19302"
   - id: "dispatcher-ec2-002"
     signaling:
       url: "ws://18.178.31.155:8080/ws"
-    inference_ws_url: "ws://laptop-inference.tail4c41d4.ts.net:8765/ws"
+    inference_ws_url: "ws://mawatarilab-inference.tail4c41d4.ts.net:8765/ws"
     ice_servers:
       - urls: "stun:stun.l.google.com:19302"
 

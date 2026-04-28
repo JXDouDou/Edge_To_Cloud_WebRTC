@@ -42,7 +42,6 @@ credentials/
 Thumbs.db
 
 # ── model ──
-*.h5
 
 # ── Old Code ──
 Code/
