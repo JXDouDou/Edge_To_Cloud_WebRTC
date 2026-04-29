@@ -32,7 +32,14 @@ edge:
     url: "ws://18.178.31.155:8080/ws"     # ← 改成 ws:// + EIP
   ice_servers:
     - urls: "stun:stun.l.google.com:19302"
-    # 先不要配 TURN，看 5G 能不能 direct connect
+    # 5G symmetric NAT 純 STUN 過不去，加公開 TURN 當保險
+    # 三台都要加 (edge + 兩台 dispatcher)，且 username/credential 一致
+    - urls: "turn:openrelay.metered.ca:80"
+      username: "openrelayproject"
+      credential: "openrelayproject"
+    - urls: "turn:openrelay.metered.ca:443"
+      username: "openrelayproject"
+      credential: "openrelayproject"
   failover:
     health_check_interval: 2.0
     max_failures: 3
@@ -46,12 +53,24 @@ dispatchers:
     inference_ws_url: "ws://mawatarilab-inference.tail4c41d4.ts.net:8765/ws"  # ← 暫時用內網 IP，之後換 Tailscale
     ice_servers:
       - urls: "stun:stun.l.google.com:19302"
+      - urls: "turn:openrelay.metered.ca:80"
+        username: "openrelayproject"
+        credential: "openrelayproject"
+      - urls: "turn:openrelay.metered.ca:443"
+        username: "openrelayproject"
+        credential: "openrelayproject"
   - id: "dispatcher-ec2-002"
     signaling:
       url: "ws://18.178.31.155:8080/ws"
     inference_ws_url: "ws://mawatarilab-inference.tail4c41d4.ts.net:8765/ws"
     ice_servers:
       - urls: "stun:stun.l.google.com:19302"
+      - urls: "turn:openrelay.metered.ca:80"
+        username: "openrelayproject"
+        credential: "openrelayproject"
+      - urls: "turn:openrelay.metered.ca:443"
+        username: "openrelayproject"
+        credential: "openrelayproject"
 
 # --- Inference ---
 inference:
