@@ -223,6 +223,13 @@ class Dispatcher:
         pc = RTCPeerConnection(configuration=ice_cfg)
         self._peers[edge_id] = pc
 
+        # ── Debug: 印出設定的 ICE servers ──
+        logger.info(
+            "ICE servers 設定 (%d 個): %s",
+            len(self.config.ice_servers),
+            [s.urls for s in self.config.ice_servers],
+        )
+
         # ── 監聽 Data Channel ──
         # Edge 是 offerer，會建立 data channel；Dispatcher 是 answerer，要監聽 datachannel 事件
         @pc.on("datachannel")
@@ -311,6 +318,21 @@ class Dispatcher:
             gathering_done.set()
 
         await asyncio.wait_for(gathering_done.wait(), timeout=10)
+
+        # ── Debug: 列出本地收集到的 ICE candidates ──
+        # 從 SDP 中解析 candidate 行，看有沒有 typ relay（= TURN 成功）
+        sdp = pc.localDescription.sdp
+        host_count = sdp.count("typ host")
+        srflx_count = sdp.count("typ srflx")
+        relay_count = sdp.count("typ relay")
+        logger.info(
+            "本地 ICE candidates: host=%d, srflx(STUN)=%d, relay(TURN)=%d",
+            host_count, srflx_count, relay_count,
+        )
+        if relay_count == 0 and len(self.config.ice_servers) > 1:
+            logger.warning(
+                "⚠️ 設定了 TURN 但沒收集到 relay candidate，TURN 可能失效或不可達"
+            )
 
         # ── 透過 Signaling 回傳 Answer ──
         answer_msg = Message(
