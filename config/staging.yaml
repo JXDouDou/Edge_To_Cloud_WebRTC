@@ -32,14 +32,16 @@ edge:
     url: "ws://18.178.31.155:8080/ws"     # ← 改成 ws:// + EIP
   ice_servers:
     - urls: "stun:stun.l.google.com:19302"
-    # 5G symmetric NAT 純 STUN 過不去，加公開 TURN 當保險
-    # 三台都要加 (edge + 兩台 dispatcher)，且 username/credential 一致
-    - urls: "turn:openrelay.metered.ca:80"
-      username: "openrelayproject"
-      credential: "openrelayproject"
-    - urls: "turn:openrelay.metered.ca:443"
-      username: "openrelayproject"
-      credential: "openrelayproject"
+    # ExpressTURN 免費帳號（每月 1 GB 流量，demo 夠用）
+    # ⚠️ 這組 credential 是個人專屬，請不要把這份 yaml 推到公開 repo
+    # 三台都要用同一組（edge + 兩台 dispatcher）
+    - urls: "turn:free.expressturn.com:3478"
+      username: "000000002091512770"
+      credential: "mAXjlHRRVDrvWOr/Eo+YPmLHsPA="
+    # 加一條走 TCP 的，給 5G 行動網路 UDP 被卡時用
+    - urls: "turn:free.expressturn.com:3478?transport=tcp"
+      username: "000000002091512770"
+      credential: "mAXjlHRRVDrvWOr/Eo+YPmLHsPA="
   failover:
     health_check_interval: 2.0
     max_failures: 3
@@ -53,24 +55,24 @@ dispatchers:
     inference_ws_url: "ws://mawatarilab-inference.tail4c41d4.ts.net:8765/ws"  # ← 暫時用內網 IP，之後換 Tailscale
     ice_servers:
       - urls: "stun:stun.l.google.com:19302"
-      - urls: "turn:openrelay.metered.ca:80"
-        username: "openrelayproject"
-        credential: "openrelayproject"
-      - urls: "turn:openrelay.metered.ca:443"
-        username: "openrelayproject"
-        credential: "openrelayproject"
+      - urls: "turn:free.expressturn.com:3478"
+        username: "000000002091512770"
+        credential: "mAXjlHRRVDrvWOr/Eo+YPmLHsPA="
+      - urls: "turn:free.expressturn.com:3478?transport=tcp"
+        username: "000000002091512770"
+        credential: "mAXjlHRRVDrvWOr/Eo+YPmLHsPA="
   - id: "dispatcher-ec2-002"
     signaling:
       url: "ws://18.178.31.155:8080/ws"
     inference_ws_url: "ws://mawatarilab-inference.tail4c41d4.ts.net:8765/ws"
     ice_servers:
       - urls: "stun:stun.l.google.com:19302"
-      - urls: "turn:openrelay.metered.ca:80"
-        username: "openrelayproject"
-        credential: "openrelayproject"
-      - urls: "turn:openrelay.metered.ca:443"
-        username: "openrelayproject"
-        credential: "openrelayproject"
+      - urls: "turn:free.expressturn.com:3478"
+        username: "000000002091512770"
+        credential: "mAXjlHRRVDrvWOr/Eo+YPmLHsPA="
+      - urls: "turn:free.expressturn.com:3478?transport=tcp"
+        username: "000000002091512770"
+        credential: "mAXjlHRRVDrvWOr/Eo+YPmLHsPA="
 
 # --- Inference ---
 inference:
