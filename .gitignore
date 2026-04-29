@@ -37,6 +37,13 @@ logs/
 *.key
 credentials/
 
+# ── 含 credential 的 config（TURN username/password、EC2 EIP、Tailscale hostname 等） ──
+# test.yaml / test_h5.yaml 仍可進 repo（純 localhost，無敏感資訊）
+config/staging.yaml
+config/staging_video.yaml
+config/prod.yaml
+config/_runtime.yaml          # run_local_test.py 動態產生的暫存檔，不該進 repo
+
 # ── OS ──
 .DS_Store
 Thumbs.db
