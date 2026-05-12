@@ -469,17 +469,25 @@ class Dispatcher:
         except Exception:
             logger.exception("inference_recv_loop 異常")
 
-        # ── 斷線自動重連 ──
-        if self._running:
-            logger.warning("Inference 連線斷開，3 秒後重連...")
-            await asyncio.sleep(3)
+        # ── 斷線自動重連（無限重試，指數退避到上限 60s）──
+        # 之前的版本只重試 2 次就放棄；若 Inference 停超過 13 秒，
+        # dispatcher 會靜默死掉，必須手動重啟才能恢復。
+        # 改成無限重試後：Inference 掛掉一天再回來，dispatcher 還是會自己接上。
+        delay = 3
+        max_delay = 60
+        while self._running:
+            logger.warning("Inference 連線斷開，%d 秒後重連...", delay)
+            await asyncio.sleep(delay)
             try:
                 await self._connect_inference()
-            except Exception:
-                logger.exception("Inference 重連失敗，10 秒後再試...")
-                await asyncio.sleep(10)
-                if self._running:
-                    asyncio.create_task(self._connect_inference())
+                logger.info("Inference 重連成功")
+                return  # _connect_inference 內部已啟動新的 recv_loop，此函式可結束
+            except Exception as e:
+                logger.warning(
+                    "Inference 重連失敗 (%s)，%d 秒後再試...",
+                    type(e).__name__, min(delay * 2, max_delay),
+                )
+                delay = min(delay * 2, max_delay)
 
 
 # ================================================================
