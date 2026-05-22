@@ -45,16 +45,13 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 # 抑制 aioice/aiortc 的 ICE candidate pair 噪音 log
-#logging.getLogger("aioice").setLevel(logging.WARNING)
-#logging.getLogger("aiortc").setLevel(logging.WARNING)
+logging.getLogger("aioice").setLevel(logging.WARNING)
+logging.getLogger("aiortc").setLevel(logging.WARNING)
 # TURN 個別 channel bind 偶爾失敗（403 Forbidden IP 等）會被 asyncio 印
 # "Task exception was never retrieved" + traceback；它是背景 task，
 # 失敗不影響整體運作，所以壓掉以免洗版。
 # 若 debug 用，把這行改回 logging.WARNING 或 logging.ERROR 即可。
-logging.getLogger("aioice").setLevel(logging.DEBUG)
-logging.getLogger("aioice.turn").setLevel(logging.DEBUG)
-logging.getLogger("aiortc").setLevel(logging.DEBUG)
-#logging.getLogger("aioice.turn").setLevel(logging.CRITICAL)
+logging.getLogger("aioice.turn").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logger = logging.getLogger("edge")
 
