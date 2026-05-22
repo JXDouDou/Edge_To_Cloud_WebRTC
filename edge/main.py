@@ -26,6 +26,7 @@ import argparse
 import asyncio
 import logging
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -37,6 +38,7 @@ from edge.capture import FrameCapture
 from edge.preprocess import Preprocessor
 from edge.webrtc_client import WebRTCClient
 from edge.controller import Controller
+from edge.metrics import MetricsCollector
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +50,12 @@ logging.getLogger("aiortc").setLevel(logging.WARNING)
 logger = logging.getLogger("edge")
 
 
-async def run(config_path: str, mode_override: str = "", source_override: str = ""):
+async def run(
+    config_path: str,
+    mode_override: str = "",
+    source_override: str = "",
+    metrics_dir: str = "",
+):
     """Edge 主要執行流程。
 
     完整流程：
@@ -89,6 +96,23 @@ async def run(config_path: str, mode_override: str = "", source_override: str = 
 
     # 結果控制器：處理推論回傳結果
     controller = Controller()
+
+    # ── 指標收集器（可選，--metrics 開啟）──
+    # 在 send / receive 兩個 hot path 多加一行紀錄，overhead 極小，
+    # 結束時 dump 出 raw CSV / summary / 圖表
+    metrics = None
+    if metrics_dir:
+        metrics = MetricsCollector(metrics_dir)
+        logger.info("Metrics 收集已啟用，輸出位置: %s", metrics_dir)
+
+        # 把 metrics.record_received 串到 controller.handle_result 前面
+        original_handle = controller.handle_result
+
+        async def _handle_with_metrics(result):
+            metrics.record_received(result)
+            await original_handle(result)
+
+        controller.handle_result = _handle_with_metrics
     # 範例：註冊偵測到 "person" 時的處理動作
     # async def on_person(det):
     #     logger.info("偵測到人！信心度: %.2f, bbox: %s", det["confidence"], det["bbox"])
@@ -134,6 +158,10 @@ async def run(config_path: str, mode_override: str = "", source_override: str = 
             # 透過 WebRTC data channel 傳送
             sent = await client.send_frame(header, jpeg)
 
+            # 記錄送出事件（給 metrics 用）
+            if metrics:
+                metrics.record_sent(header["frame_id"], seq, len(jpeg), sent)
+
             # 每 30 幀印一次進度（方便確認串流是否正常）
             if seq % 30 == 0:
                 logger.info(
@@ -153,6 +181,8 @@ async def run(config_path: str, mode_override: str = "", source_override: str = 
     finally:
         capture.release()
         await client.close()
+        if metrics:
+            metrics.finalize()
         logger.info("Edge 已關閉")
 
 
@@ -174,8 +204,25 @@ if __name__ == "__main__":
             "camera 模式填裝置索引，例如 0 或 /dev/video0"
         ),
     )
+    parser.add_argument(
+        "--metrics",
+        nargs="?",
+        const="auto",
+        default="",
+        help=(
+            "啟用指標收集。不帶值 = 自動產生 metrics/run_<timestamp>/ 目錄；"
+            "帶值 = 用該值當輸出目錄。"
+            "結束時會寫入 raw_data.csv / summary.txt / *.png"
+        ),
+    )
     args = parser.parse_args()
+
+    # --metrics auto → 自動產生帶時間戳的目錄名
+    metrics_dir = args.metrics
+    if metrics_dir == "auto":
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        metrics_dir = f"metrics/run_{ts}"
     # aiortc 在 Windows 需要 SelectorEventLoop（PreactorEventLoop 不支援 UDP/DTLS）
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(run(args.config, args.mode, args.source))
+    asyncio.run(run(args.config, args.mode, args.source, metrics_dir))
