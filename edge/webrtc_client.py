@@ -85,6 +85,7 @@ class WebRTCClient:
         self._failover_lock = asyncio.Lock()   # 防止並發觸發多次 failover
         self._health_task = None               # 健康檢查 task
         self._sig_task = None                  # signaling 監聽 task
+        self._last_pong_time = 0.0             # 上次收到 PONG 的時間（用於偵測 dispatcher 死掉）
 
     # ================================================================
     # 公開 API
@@ -324,8 +325,9 @@ class WebRTCClient:
                     if msg.type == MsgType.RESULT:
                         asyncio.create_task(self.on_result(msg.payload))
                     elif msg.type == MsgType.PONG:
-                        # 健康檢查 PONG 回覆
+                        # 健康檢查 PONG 回覆 — 記錄收到時間以便偵測 dispatcher 死掉
                         rtt = time.time() - msg.payload.get("ping_ts", 0)
+                        self._last_pong_time = time.time()
                         logger.debug("PONG from %s, RTT=%.1fms", self._current_disp, rtt * 1000)
                 except Exception:
                     logger.exception("解析訊息失敗")
@@ -391,24 +393,55 @@ class WebRTCClient:
     # ================================================================
 
     async def _health_check_loop(self):
-        """定期透過 Data Channel 發送 PING，監控連線品質。
+        """定期透過 Data Channel 發送 PING，並偵測 dispatcher 是否失聯。
 
-        如果 data channel 處於 open 狀態，每隔 health_check_interval 秒
-        發送一個 PING 訊息。Dispatcher 收到後會回覆 PONG。
-        Edge 在 _on_message 中接收 PONG 並計算 RTT。
+        每 health_check_interval 秒做兩件事：
+          1. 檢查上次 PONG 多久之前——如果超過 max_failures * interval 秒沒回，
+             視為 dispatcher 死掉，立刻觸發 failover（不等 WebRTC ICE timeout）
+          2. 如果連線正常，發新的 PING
 
-        此 loop 會持續運行直到被 cancel。
+        為什麼要主動偵測？
+          aiortc 的 PeerConnection 在對方 dispatcher process 突然消失時，
+          要等 30-60 秒 ICE/DTLS heartbeat timeout 才會報 failed。
+          主動 PING/PONG 可以把這個切換時間壓到 ~10 秒以內。
         """
+        # 初始化：避免一開始就誤判（給點時間建立連線）
+        self._last_pong_time = time.time()
+
+        # PONG 容忍時間：若超過此秒數沒收到 PONG，視為 dispatcher 失聯
+        # 預設 max_failures(3) * health_check_interval(2.0) = 6 秒
+        pong_timeout = max(
+            self.failover.max_failures * self.failover.health_check_interval,
+            6.0,
+        )
+
         while True:
             try:
                 await asyncio.sleep(self.failover.health_check_interval)
-                if self._connected.is_set() and self._dc and self._dc.readyState == "open":
-                    ping = Message(
-                        type=MsgType.PING,
-                        source_id=self.edge_id,
-                        payload={"ping_ts": time.time()},
+
+                # 如果還沒連上（剛 failover 中）就跳過這輪
+                if not self._connected.is_set() or not self._dc:
+                    continue
+                if self._dc.readyState != "open":
+                    continue
+
+                # ── 主動偵測：PONG 超時？──
+                elapsed = time.time() - self._last_pong_time
+                if elapsed > pong_timeout:
+                    logger.warning(
+                        "Dispatcher %s PING 已 %.1fs 無回應（超過 %.1fs），觸發 failover",
+                        self._current_disp, elapsed, pong_timeout,
                     )
-                    self._dc.send(ping.serialize())
+                    asyncio.create_task(self._do_failover())
+                    continue
+
+                # ── 發新的 PING ──
+                ping = Message(
+                    type=MsgType.PING,
+                    source_id=self.edge_id,
+                    payload={"ping_ts": time.time()},
+                )
+                self._dc.send(ping.serialize())
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -439,11 +472,33 @@ class WebRTCClient:
 
             # 關閉舊的 PeerConnection
             if self._pc:
-                await self._pc.close()
+                try:
+                    await self._pc.close()
+                except Exception:
+                    logger.exception("關閉舊 PC 失敗（忽略，繼續 failover）")
+                self._pc = None
+                self._dc = None
+
+            # ── 重新請求 dispatcher 列表 ──
+            # 死掉的 dispatcher 可能已從 signaling 移除，
+            # 也可能有新 dispatcher 上線，refresh 一下拿最新的
+            try:
+                self._dispatchers = []  # 清空後等待回覆
+                await self._fetch_dispatchers()
+            except Exception:
+                logger.exception("刷新 dispatcher 列表失敗，沿用舊清單")
+
+            if not self._dispatchers:
+                logger.error("Failover 失敗：無可用 dispatcher")
+                # 等久一點再重試（避免 hot loop）
+                await asyncio.sleep(self.failover.recovery_delay * 3)
+                asyncio.create_task(self._do_failover())
+                return
 
             # 切換到下一台 dispatcher（循環式）
             self._disp_idx = (self._disp_idx + 1) % len(self._dispatchers)
             self._fail_count = 0
+            self._last_pong_time = time.time()  # 重置 PONG 計時，避免新連線一上來就被判失聯
 
             # 等待恢復延遲
             logger.info(
@@ -458,5 +513,5 @@ class WebRTCClient:
                 logger.info("Failover 成功: %s → %s", old, self._current_disp)
             except Exception:
                 logger.exception("Failover 連線失敗，將重試下一台...")
-                # 遞迴重試（非遞迴呼叫，透過 create_task 避免 stack 溢出）
+                # 非遞迴呼叫（透過 create_task），避免 stack 溢出
                 asyncio.create_task(self._do_failover())
