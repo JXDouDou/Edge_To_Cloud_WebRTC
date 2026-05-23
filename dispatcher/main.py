@@ -209,6 +209,23 @@ class Dispatcher:
         edge_id = msg.source_id
         logger.info("收到 WebRTC OFFER: %s", edge_id)
 
+        # ── 清理舊連線（同一個 edge_id 重連時）──
+        # Edge Ctrl+C 後重連，會再送 OFFER 過來。
+        # 必須先把舊的 PeerConnection 顯式關閉並從追蹤表移除，
+        # 否則舊 pc 在轉換到 closed 狀態時的 handler 會把新 pc 的條目誤刪。
+        old_pc = self._peers.pop(edge_id, None)
+        self._channels.pop(edge_id, None)
+        # 順便清掉舊的 debug 計數器（重新從 0 開始）
+        self._frames_received.pop(edge_id, None)
+        self._frames_forwarded.pop(edge_id, None)
+        self._results_returned.pop(edge_id, None)
+        if old_pc is not None:
+            logger.info("清理舊的 PeerConnection: edge=%s", edge_id)
+            try:
+                await old_pc.close()
+            except Exception:
+                logger.exception("關閉舊 PeerConnection 失敗: edge=%s", edge_id)
+
         # ── 建立 PeerConnection ──
         ice_cfg = RTCConfiguration(
             iceServers=[
@@ -286,13 +303,20 @@ class Dispatcher:
         async def on_state():
             """監控與 Edge 的 WebRTC 連線狀態。
 
-            當連線 failed/closed 時，清理該 Edge 的追蹤資料。
+            當連線 failed/closed 時，清理該 Edge 的追蹤資料——
+            但只有當前條目仍指向此 pc 時才清理，避免「舊 pc 關閉時
+            把新 pc 的條目誤刪」的 race condition（edge Ctrl+C 重連時會踩到）。
             """
             state = pc.connectionState
             logger.info("Edge %s PeerConnection 狀態: %s", edge_id, state)
             if state in ("failed", "closed"):
-                self._peers.pop(edge_id, None)
-                self._channels.pop(edge_id, None)
+                # 只在此 pc 仍是當前條目時才清，避免覆蓋新連線
+                if self._peers.get(edge_id) is pc:
+                    self._peers.pop(edge_id, None)
+                    self._channels.pop(edge_id, None)
+                    logger.info("已清理 Edge 追蹤資料: %s", edge_id)
+                else:
+                    logger.info("舊 pc 關閉，當前條目已是新 pc，跳過清理: %s", edge_id)
 
         # ── 設定 Remote Description（Edge 的 Offer）──
         offer = RTCSessionDescription(
