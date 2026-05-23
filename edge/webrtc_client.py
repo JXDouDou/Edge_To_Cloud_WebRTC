@@ -338,9 +338,18 @@ class WebRTCClient:
             """監控 PeerConnection 連線狀態變化。
 
             狀態流程: new → connecting → connected → (disconnected → failed)
-            當狀態變為 failed/disconnected/closed 時，增加失敗計數並可能觸發 failover。
+
+            ⚠️ Race condition 防護：
+              failover 時關閉舊 pc，會非同步觸發舊 pc 的 state="closed" 事件。
+              如果此時新 pc 已建立並接手 self._pc，舊 pc 的 handler 仍會跑，
+              累加 fail_count、誤觸發另一次 failover，把新 pc 也拉下水。
+              所以這裡先檢查「我這個 pc 是不是當前 self._pc」，不是的話直接 ignore。
             """
             state = pc.connectionState  # 用 pc（固定參考），不用 self._pc
+            if pc is not self._pc:
+                # 此 pc 已被新 pc 取代，舊事件忽略
+                logger.debug("舊 pc 的 state change 事件忽略: state=%s", state)
+                return
             logger.info("PeerConnection 狀態: %s", state)
             if state in ("failed", "disconnected", "closed"):
                 self._connected.clear()
@@ -470,14 +479,19 @@ class WebRTCClient:
             logger.warning("觸發 Failover: %s", old)
             self._connected.clear()
 
-            # 關閉舊的 PeerConnection
-            if self._pc:
+            # ── 關閉舊的 PeerConnection ──
+            # ⚠️ 先把 self._pc / self._dc 設 None，再 await close()。
+            # 順序很重要：close() 是 async 並會觸發 connectionstatechange 事件，
+            # 若那時 self._pc 還指著舊 pc，handler 會以為這是「current pc 死掉」
+            # 並把 fail_count 拉滿，誤觸發第二次 failover 把新 pc 也關掉。
+            old_pc = self._pc
+            self._pc = None
+            self._dc = None
+            if old_pc is not None:
                 try:
-                    await self._pc.close()
+                    await old_pc.close()
                 except Exception:
                     logger.exception("關閉舊 PC 失敗（忽略，繼續 failover）")
-                self._pc = None
-                self._dc = None
 
             # ── 重新請求 dispatcher 列表 ──
             # 死掉的 dispatcher 可能已從 signaling 移除，
