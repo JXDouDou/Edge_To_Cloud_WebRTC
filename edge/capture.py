@@ -50,8 +50,9 @@ class FrameCapture:
         self._frame_interval = 1.0 / max(config.fps, 1)
         self._last_frame_time = 0.0
 
-        # 影片模式：播完自動迴圈；攝影機模式：不迴圈
-        self._loop = config.mode == "video"
+        # 影片模式：依 config.loop 決定播完自動迴圈與否（預設 True，向後相容）
+        # 攝影機模式：永遠不迴圈（連續即時串流，沒有「結束」的概念）
+        self._loop = (config.mode == "video") and config.loop
 
     def open(self):
         """開啟影像來源。

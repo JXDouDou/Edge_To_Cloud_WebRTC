@@ -33,12 +33,16 @@ class CaptureConfig:
         fps:    輸出幀率上限，capture 模組會自動節流
         width:  攝影機解析度寬度（僅 camera 模式生效）
         height: 攝影機解析度高度（僅 camera 模式生效）
+        loop:   影片播完是否自動從頭重播（僅 video 模式生效）。
+                預設 True 維持原本行為；改 False 可讓影片播完就停止，
+                方便 debug「跑一輪要花多久」「播完後系統怎麼收尾」等問題。
     """
     mode: str = "video"
     source: str = "test_data/test_video.mp4"
     fps: int = 5
     width: int = 640
     height: int = 480
+    loop: bool = True
 
 
 @dataclass
