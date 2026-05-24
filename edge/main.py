@@ -61,6 +61,7 @@ async def run(
     mode_override: str = "",
     source_override: str = "",
     metrics_dir: str = "",
+    loop_override: str = "",
 ):
     """Edge 主要執行流程。
 
@@ -91,6 +92,11 @@ async def run(
     if source_override:
         logger.info("CLI override: source %s → %s", edge.capture.source, source_override)
         edge.capture.source = source_override
+    if loop_override:
+        # loop_override 是字串 "yes" / "no"（CLI 進來的）
+        new_loop = loop_override.lower() in ("yes", "true", "1", "on")
+        logger.info("CLI override: loop %s → %s", edge.capture.loop, new_loop)
+        edge.capture.loop = new_loop
 
     # ── 初始化各元件 ──
 
@@ -221,6 +227,15 @@ if __name__ == "__main__":
             "結束時會寫入 raw_data.csv / summary.txt / *.png"
         ),
     )
+    parser.add_argument(
+        "--loop",
+        default="",
+        choices=["", "yes", "no"],
+        help=(
+            "覆寫 yaml 的 capture.loop（僅 video 模式生效，留空 = 用 yaml 設定）。"
+            "yes = 影片播完從頭重播；no = 影片播完 edge 自動退出（適合 debug）"
+        ),
+    )
     args = parser.parse_args()
 
     # --metrics auto → 自動產生帶時間戳的目錄名
@@ -231,4 +246,4 @@ if __name__ == "__main__":
     # aiortc 在 Windows 需要 SelectorEventLoop（PreactorEventLoop 不支援 UDP/DTLS）
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(run(args.config, args.mode, args.source, metrics_dir))
+    asyncio.run(run(args.config, args.mode, args.source, metrics_dir, args.loop))
