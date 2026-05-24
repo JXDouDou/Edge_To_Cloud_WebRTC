@@ -86,6 +86,7 @@ class WebRTCClient:
         self._health_task = None               # 健康檢查 task
         self._sig_task = None                  # signaling 監聽 task
         self._last_pong_time = 0.0             # 上次收到 PONG 的時間（用於偵測 dispatcher 死掉）
+        self._failover_in_progress = False     # failover 是否進行中（防止重複觸發堆積）
 
     # ================================================================
     # 公開 API
@@ -116,16 +117,21 @@ class WebRTCClient:
             jpeg_data: JPEG 壓縮後的影像位元組
 
         Returns:
-            True = 傳送成功，False = 傳送失敗（未連線或幀太大）
+            True = 傳送成功，False = 傳送失敗（未連線、幀太大、或 failover 中）
 
         Note:
             - 如果連續失敗次數達到閾值，會自動觸發 failover
+            - failover 進行中時直接 return False，不再累加 fail_count
+              （避免在 failover 14 秒內每幀都觸發新的 failover task，造成 task 堆積）
             - 超過 256KB 的幀會被跳過（不傳送也不計失敗）
         """
         if not self._connected.is_set():
+            # Failover 已在進行 → 別再觸發新的，直接跳過這幀
+            if self._failover_in_progress:
+                return False
             self._fail_count += 1
             if self._fail_count >= self.failover.max_failures:
-                asyncio.create_task(self._do_failover())
+                self._trigger_failover()
             return False
 
         try:
@@ -137,10 +143,23 @@ class WebRTCClient:
             return True
         except Exception as e:
             logger.error("send_frame 錯誤: %s", e)
+            if self._failover_in_progress:
+                return False
             self._fail_count += 1
             if self._fail_count >= self.failover.max_failures:
-                asyncio.create_task(self._do_failover())
+                self._trigger_failover()
             return False
+
+    def _trigger_failover(self):
+        """同步函式：建立 failover task 並設旗標，確保同時只有一個 failover 進行。
+
+        多個 source（send_frame / on_state / health_check）可能同時想觸發 failover，
+        此函式用 `_failover_in_progress` flag 去重，防止 task 堆積。
+        """
+        if self._failover_in_progress:
+            return
+        self._failover_in_progress = True
+        asyncio.create_task(self._do_failover())
 
     async def close(self):
         """關閉所有連線並釋放資源。
@@ -353,9 +372,11 @@ class WebRTCClient:
             logger.info("PeerConnection 狀態: %s", state)
             if state in ("failed", "disconnected", "closed"):
                 self._connected.clear()
+                if self._failover_in_progress:
+                    return  # 已在 failover，不要再加碼
                 self._fail_count += 1
                 if self._fail_count >= self.failover.max_failures:
-                    await self._do_failover()
+                    self._trigger_failover()
 
         # ── 建立 SDP Offer ──
         offer = await pc.createOffer()
@@ -441,7 +462,7 @@ class WebRTCClient:
                         "Dispatcher %s PING 已 %.1fs 無回應（超過 %.1fs），觸發 failover",
                         self._current_disp, elapsed, pong_timeout,
                     )
-                    asyncio.create_task(self._do_failover())
+                    self._trigger_failover()
                     continue
 
                 # ── 發新的 PING ──
@@ -475,6 +496,12 @@ class WebRTCClient:
             使用 asyncio.Lock 確保同一時間只有一個 failover 在執行。
         """
         async with self._failover_lock:
+            # 如果在等 lock 期間連線已經恢復，就不用再 failover 了
+            if self._connected.is_set():
+                logger.info("Failover 跳過：連線已恢復")
+                self._failover_in_progress = False
+                return
+
             old = self._current_disp
             logger.warning("觸發 Failover: %s", old)
             self._connected.clear()
@@ -505,8 +532,9 @@ class WebRTCClient:
             if not self._dispatchers:
                 logger.error("Failover 失敗：無可用 dispatcher")
                 # 等久一點再重試（避免 hot loop）
+                self._failover_in_progress = False  # 釋放 flag 讓下次能再觸發
                 await asyncio.sleep(self.failover.recovery_delay * 3)
-                asyncio.create_task(self._do_failover())
+                self._trigger_failover()
                 return
 
             # 切換到下一台 dispatcher（循環式）
@@ -525,7 +553,9 @@ class WebRTCClient:
             try:
                 await self._connect_to_dispatcher()
                 logger.info("Failover 成功: %s → %s", old, self._current_disp)
+                self._failover_in_progress = False  # 成功，清旗標
             except Exception:
                 logger.exception("Failover 連線失敗，將重試下一台...")
-                # 非遞迴呼叫（透過 create_task），避免 stack 溢出
-                asyncio.create_task(self._do_failover())
+                # 清旗標讓 _trigger_failover 能再次啟動
+                self._failover_in_progress = False
+                self._trigger_failover()
