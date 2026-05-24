@@ -72,7 +72,7 @@ class Message:
     def serialize(self) -> str:
         """將 Message 序列化為 JSON 字串。
 
-        MsgType enum 會被轉為其 value 字串，確保跨語言相容性。
+        MsgType enum 會被轉為其 value 字串，確保跨語言相容性。                 -> type=<MsgType.TEXT: 'text'> 變 成 "text"。
         用於 WebSocket text message 和 WebRTC data channel text message。
 
         Returns:
