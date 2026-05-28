@@ -62,6 +62,7 @@ async def run(
     source_override: str = "",
     metrics_dir: str = "",
     loop_override: str = "",
+    sample_mode_override: str = "",
 ):
     """Edge 主要執行流程。
 
@@ -92,6 +93,17 @@ async def run(
     if source_override:
         logger.info("CLI override: source %s → %s", edge.capture.source, source_override)
         edge.capture.source = source_override
+    if sample_mode_override:
+        if sample_mode_override not in ("real_time", "all_frames", "fast_replay"):
+            raise ValueError(
+                f"--sample-mode 只能是 real_time / all_frames / fast_replay，"
+                f"收到: {sample_mode_override}"
+            )
+        logger.info(
+            "CLI override: sample_mode %s → %s",
+            edge.capture.sample_mode, sample_mode_override,
+        )
+        edge.capture.sample_mode = sample_mode_override
     if loop_override:
         # loop_override 是字串 "yes" / "no"（CLI 進來的）
         new_loop = loop_override.lower() in ("yes", "true", "1", "on")
@@ -217,6 +229,17 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--sample-mode",
+        default="",
+        choices=["", "real_time", "all_frames", "fast_replay"],
+        help=(
+            "覆寫 yaml 的 capture.sample_mode（僅 video 模式生效）："
+            "real_time = 原速播 + 降取樣（預設）；"
+            "all_frames = 每格都送 + 節流（慢播）；"
+            "fast_replay = 每格都送 + 全速灌（壓測用）"
+        ),
+    )
+    parser.add_argument(
         "--metrics",
         nargs="?",
         const="auto",
@@ -246,4 +269,7 @@ if __name__ == "__main__":
     # aiortc 在 Windows 需要 SelectorEventLoop（PreactorEventLoop 不支援 UDP/DTLS）
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(run(args.config, args.mode, args.source, metrics_dir, args.loop))
+    asyncio.run(run(
+        args.config, args.mode, args.source, metrics_dir,
+        args.loop, args.sample_mode,
+    ))

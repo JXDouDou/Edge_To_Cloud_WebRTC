@@ -47,6 +47,7 @@ class FrameCapture:
 
         # 計算每幀的最小間隔時間（秒），用於 FPS 節流
         # 例如 fps=5 → _frame_interval=0.2 秒
+        # fast_replay 模式會在 open() 中改為 0（不節流）
         self._frame_interval = 1.0 / max(config.fps, 1)
         self._last_frame_time = 0.0
 
@@ -58,6 +59,15 @@ class FrameCapture:
         # 攝影機模式不需要 skip（驅動端已經自己控制 fps）
         self._video_native_fps = 0.0
         self._frames_to_skip = 0
+
+        # 影片取樣模式（僅 video 模式有效）
+        # 三種選項：real_time / all_frames / fast_replay（見 CaptureConfig docstring）
+        self._sample_mode = config.sample_mode if config.mode == "video" else "real_time"
+        if self._sample_mode not in ("real_time", "all_frames", "fast_replay"):
+            raise ValueError(
+                f"capture.sample_mode 必須是 real_time / all_frames / fast_replay，"
+                f"收到: {self._sample_mode}"
+            )
 
     def open(self):
         """開啟影像來源。
@@ -116,30 +126,53 @@ class FrameCapture:
         actual_fourcc = "".join(
             chr((fourcc_int >> 8 * i) & 0xFF) for i in range(4)
         ) if fourcc_int else "?"
-        # ── 影片模式：計算 frame skip ────────────────────────
-        # 影片以原生 fps 速率記錄，要讓它以「真實時間速度」播放並降採樣到 target fps，
-        # 必須每讀 1 格目標，先丟掉 (native_fps / target_fps - 1) 格。
-        # 例如：30 fps 影片 → 5 fps 取樣，每讀 1 格保留，丟 5 格。
-        # 沒這步的話 30fps 影片用 5fps 取樣會花 6 倍真實時間才播完。
+        # ── 影片模式：依 sample_mode 計算 frame skip 跟節流 ────────────────────
+        # 影片以原生 fps 速率記錄（例如 30 fps），要讓它以特定速率送出有三種策略：
+        #
+        #   real_time   原速播 + 降取樣  → skip = native/target - 1, interval = 1/target
+        #               用途：模擬真實相機。94 秒影片 → 94 秒跑完，產生 ~470 幀
+        #
+        #   all_frames  不跳 + 節流到 target fps → skip = 0, interval = 1/target
+        #               用途：想處理影片所有 frame。94 秒 30fps → 564 秒（慢動作）
+        #
+        #   fast_replay 不跳 + 不節流 → skip = 0, interval = 0
+        #               用途：壓力測試 / 快速倒帶看 prediction 走勢
         if self.config.mode == "video":
             self._video_native_fps = actual_fps if actual_fps > 0 else 30.0
-            if self.config.fps > 0 and self._video_native_fps > self.config.fps:
-                # 每讀 N+1 格只保留 1 格，N = skip 數
-                self._frames_to_skip = max(
-                    0, int(round(self._video_native_fps / self.config.fps)) - 1
-                )
-            else:
-                # 影片本來就比 target fps 慢（或一樣慢）→ 不跳，每格都取
-                self._frames_to_skip = 0
 
+            if self._sample_mode == "real_time":
+                if self.config.fps > 0 and self._video_native_fps > self.config.fps:
+                    # 每讀 N+1 格只保留 1 格，N = skip 數
+                    self._frames_to_skip = max(
+                        0, int(round(self._video_native_fps / self.config.fps)) - 1
+                    )
+                else:
+                    # 影片本來就比 target fps 慢（或一樣慢）→ 不跳，每格都取
+                    self._frames_to_skip = 0
+                # _frame_interval 維持原本（1/target_fps）
+
+            elif self._sample_mode == "all_frames":
+                self._frames_to_skip = 0
+                # _frame_interval 維持原本（1/target_fps）→ 強制慢播
+
+            elif self._sample_mode == "fast_replay":
+                self._frames_to_skip = 0
+                self._frame_interval = 0.0  # 不節流，全速送
+
+        # ── 啟動 log（讓你一眼看出三個關鍵參數）──
+        mode_info = ""
+        if self.config.mode == "video":
+            mode_info = (
+                f", sample_mode={self._sample_mode}"
+                f", skip={self._frames_to_skip}/frame"
+                f", throttle={'on' if self._frame_interval > 0 else 'OFF (full-speed)'}"
+            )
         logger.info(
             "擷取器開啟: source=%s, mode=%s, requested_fps=%d, "
             "actual=%dx%d @ %.1f fps, fourcc=%s%s",
             src, self.config.mode, self.config.fps,
             actual_w, actual_h, actual_fps, actual_fourcc,
-            (f", skip={self._frames_to_skip}/frame (真實時間播放)"
-             if self.config.mode == "video" and self._frames_to_skip > 0
-             else ""),
+            mode_info,
         )
 
     def read(self):
