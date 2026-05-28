@@ -28,14 +28,21 @@ class CaptureConfig:
     """影像擷取設定。
 
     Attributes:
-        mode:   "video" 使用影片檔（測試用），"camera" 使用攝影機（Pi 生產用）
-        source: 影片檔路徑（mode=video）或攝影機索引/裝置路徑（mode=camera）
-        fps:    輸出幀率上限，capture 模組會自動節流
-        width:  攝影機解析度寬度（僅 camera 模式生效）
-        height: 攝影機解析度高度（僅 camera 模式生效）
-        loop:   影片播完是否自動從頭重播（僅 video 模式生效）。
-                預設 True 維持原本行為；改 False 可讓影片播完就停止，
-                方便 debug「跑一輪要花多久」「播完後系統怎麼收尾」等問題。
+        mode:        "video" 使用影片檔（測試用），"camera" 使用攝影機（Pi 生產用）
+        source:      影片檔路徑（mode=video）或攝影機索引/裝置路徑（mode=camera）
+        fps:         輸出幀率上限，capture 模組會自動節流
+        width:       攝影機解析度寬度（僅 camera 模式生效）
+        height:      攝影機解析度高度（僅 camera 模式生效）
+        loop:        影片播完是否自動從頭重播（僅 video 模式生效）。
+                     預設 True 維持原本行為；改 False 可讓影片播完就停止，
+                     方便 debug「跑一輪要花多久」「播完後系統怎麼收尾」等問題。
+        sample_mode: 影片取樣模式（僅 video 模式生效，camera 模式無視）：
+                     - "real_time"   原速播放 + 降取樣到 target fps（預設，模擬真實相機）
+                                     94 秒影片 + target=5 fps → 94 秒跑完，產生 ~470 幀
+                     - "all_frames"  每格都送 + 節流到 target fps（影片變慢播）
+                                     94 秒 30fps 影片 + target=5 fps → 564 秒跑完，全部 2820 幀
+                     - "fast_replay" 每格都送 + 不節流（全速灌幀）
+                                     用於壓力測試或快速倒帶看 prediction 走勢
     """
     mode: str = "video"
     source: str = "test_data/test_video.mp4"
@@ -43,6 +50,7 @@ class CaptureConfig:
     width: int = 640
     height: int = 480
     loop: bool = True
+    sample_mode: str = "real_time"
 
 
 @dataclass
