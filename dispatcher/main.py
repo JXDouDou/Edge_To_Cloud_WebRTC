@@ -54,6 +54,12 @@ logging.basicConfig(
 # 抑制 aioice/aiortc 的 ICE candidate pair 噪音 log
 logging.getLogger("aioice").setLevel(logging.WARNING)
 logging.getLogger("aiortc").setLevel(logging.WARNING)
+# TURN 個別 channel_bind 偶爾失敗（ExpressTURN 拒絕私有 IP 等），
+# asyncio 會印 "Task exception was never retrieved" 加 traceback。
+# 由於資料實際走 Tailscale 不走 TURN，這些是純雜訊，壓掉。
+# Debug 時改回 logging.WARNING 即可看到。
+logging.getLogger("aioice.turn").setLevel(logging.CRITICAL)
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logger = logging.getLogger("dispatcher")
 
 

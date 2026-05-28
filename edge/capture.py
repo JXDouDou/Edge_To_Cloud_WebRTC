@@ -54,6 +54,11 @@ class FrameCapture:
         # 攝影機模式：永遠不迴圈（連續即時串流，沒有「結束」的概念）
         self._loop = (config.mode == "video") and config.loop
 
+        # 影片原生 fps（open() 後填）——用於 video mode 的 frame skip 計算
+        # 攝影機模式不需要 skip（驅動端已經自己控制 fps）
+        self._video_native_fps = 0.0
+        self._frames_to_skip = 0
+
     def open(self):
         """開啟影像來源。
 
@@ -111,11 +116,30 @@ class FrameCapture:
         actual_fourcc = "".join(
             chr((fourcc_int >> 8 * i) & 0xFF) for i in range(4)
         ) if fourcc_int else "?"
+        # ── 影片模式：計算 frame skip ────────────────────────
+        # 影片以原生 fps 速率記錄，要讓它以「真實時間速度」播放並降採樣到 target fps，
+        # 必須每讀 1 格目標，先丟掉 (native_fps / target_fps - 1) 格。
+        # 例如：30 fps 影片 → 5 fps 取樣，每讀 1 格保留，丟 5 格。
+        # 沒這步的話 30fps 影片用 5fps 取樣會花 6 倍真實時間才播完。
+        if self.config.mode == "video":
+            self._video_native_fps = actual_fps if actual_fps > 0 else 30.0
+            if self.config.fps > 0 and self._video_native_fps > self.config.fps:
+                # 每讀 N+1 格只保留 1 格，N = skip 數
+                self._frames_to_skip = max(
+                    0, int(round(self._video_native_fps / self.config.fps)) - 1
+                )
+            else:
+                # 影片本來就比 target fps 慢（或一樣慢）→ 不跳，每格都取
+                self._frames_to_skip = 0
+
         logger.info(
             "擷取器開啟: source=%s, mode=%s, requested_fps=%d, "
-            "actual=%dx%d @ %.1f fps, fourcc=%s",
+            "actual=%dx%d @ %.1f fps, fourcc=%s%s",
             src, self.config.mode, self.config.fps,
             actual_w, actual_h, actual_fps, actual_fourcc,
+            (f", skip={self._frames_to_skip}/frame (真實時間播放)"
+             if self.config.mode == "video" and self._frames_to_skip > 0
+             else ""),
         )
 
     def read(self):
@@ -138,7 +162,16 @@ class FrameCapture:
         if elapsed < self._frame_interval:
             time.sleep(self._frame_interval - elapsed)
 
-        # ── 讀取幀 ──
+        # ── 影片模式：丟掉中間的 frame，讓影片以真實時間速度推進 ──
+        # 例如 30fps 影片要在 5fps 取樣下保持真實時間播放，跳過 5 格、留 1 格
+        # （camera 模式 self._frames_to_skip == 0，這個迴圈不會執行）
+        for _ in range(self._frames_to_skip):
+            ok = self._cap.grab()  # grab 比 read 快（不解碼）
+            if not ok:
+                # 影片結尾，跳出 skip 迴圈讓下方的「讀取幀」處理 loop/結束
+                break
+
+        # ── 讀取幀（這格才解碼）──
         ret, frame = self._cap.read()
 
         # 影片模式：播完自動從頭迴圈
