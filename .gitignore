@@ -55,3 +55,6 @@ Code/
 
 # ── Quick Test ──
 quick_test/debug_frames/
+
+# ── 其他 ──
+metrics/
