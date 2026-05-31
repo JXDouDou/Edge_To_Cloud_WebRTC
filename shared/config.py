@@ -124,14 +124,40 @@ class SignalingConfig:
 class FailoverConfig:
     """Edge 端 dispatcher 故障轉移設定。
 
-    Edge 會持續監控與當前 dispatcher 的連線品質，
-    當連續失敗次數達到 max_failures 時，自動切換到下一台 dispatcher。
+    Edge 會持續監控與當前 dispatcher 的連線品質：
+      - 每 health_check_interval 秒透過 data channel 發 PING
+      - 若超過 (max_failures × health_check_interval) 秒沒收到任何 PONG，視為失聯
+      - 觸發 failover：關閉舊連線 → 等 recovery_delay → 連下一台 dispatcher
+
+    Failover 三階段時間構成：
+      A. 偵測          = max_failures × health_check_interval  秒
+      B. 內部處理      = recovery_delay (主要) + ~0.5s 雜項
+      C. 新連線建立    = 2-4 秒（Tailscale 直連時；其他環境更久）
+      合計              = A + B + C
+
+    各環境推薦值（在 staging*.yaml 直接覆寫）：
+
+      ┌────────────────────────┬───────┬──────────────┬──────────────┬─────────┐
+      │ 環境                   │ hci   │ max_failures │ recovery_dly │ 總切換  │
+      ├────────────────────────┼───────┼──────────────┼──────────────┼─────────┤
+      │ 本機 / LAN demo        │ 1.0   │ 2            │ 1.5          │ ~5s     │
+      │ Tailscale 穩定網路     │ 1.5   │ 3            │ 2.0          │ ~7s     │
+      │ 目前 5G + Tailscale ★  │ 2.0   │ 3            │ 3.0          │ ~11s    │
+      │ 5G 直連（無 Tailscale）│ 3.0   │ 4            │ 5.0          │ ~18s    │
+      │ 不穩定衛星 / 跨洲      │ 5.0   │ 5            │ 8.0          │ ~35s    │
+      └────────────────────────┴───────┴──────────────┴──────────────┴─────────┘
+
+    調整指南：
+      - max_failures < 2  → 5G 抖動就誤判，會 pong-pong failover，不推薦
+      - recovery_delay < 1.5 → aiortc/aioice 內部 cleanup 可能還沒做完，新連線 timeout 機率大幅上升
+      - 想最激進 5-7s 切換：先確認網路真的穩，否則弄巧成拙
 
     Attributes:
-        health_check_interval: 健康檢查間隔（秒），定期透過 data channel 發 PING
-        max_failures:          允許的最大連續失敗次數，超過則觸發 failover
-        recovery_delay:        failover 後等待多久再嘗試連線下一台（秒），
-                               避免快速輪轉造成雪崩
+        health_check_interval: 健康檢查間隔（秒），定期透過 data channel 發 PING。
+                               同時是 PONG 缺席計時的單位。
+        max_failures:          允許的最大連續無回應次數（PONG 漏接次數），超過則觸發 failover。
+        recovery_delay:        failover 中等待 ICE / aiortc cleanup 的延遲（秒）。
+                               太短 → 新連線 timeout；太長 → 切換變慢。
     """
     health_check_interval: float = 2.0
     max_failures: int = 3
@@ -163,6 +189,46 @@ class EdgeConfig:
 
 
 @dataclass
+class FrameBufferConfig:
+    """Dispatcher 每個 edge 的 frame buffer 策略。
+
+    用來在 inference 處理速度跟不上 frame 進來速度時，決定要丟哪些 frame。
+    三種模式跑同一段影片可做 A/B 比較，看哪個對 prediction 品質最有利。
+
+    Modes:
+      fifo (預設)
+        不丟，每個 frame 都用 asyncio.create_task 並行轉發到 inference。
+        WebSocket TCP buffer 滿了就 backpressure。
+        過載時 latency 持續成長，但所有 frame 都會被處理。
+
+      drop_oldest
+        為每個 edge 建立 asyncio.Queue(maxsize=max_size)。
+        Queue 滿時把最舊的丟掉再放新的。
+        用 max_size 控制積壓上限（推薦 2-3）。
+        ★ 對「即時取樣」場景（液面、溫度監控）最合理：永遠處理最新狀態。
+
+      latest_only
+        永遠只保留最新一張（單槽），等於 drop_oldest + max_size=1。
+        Inference 一空閒就拿最新的，但會丟掉大量中間 frame。
+        延遲最低，但取樣稀疏。
+
+    比較這三種模式建議：
+      1. edge 用 capture.sample_mode=fast_replay 灌滿 inference
+      2. 三種模式各跑一次
+      3. 比 metrics 的 latency / completion_rate / prediction 走勢
+
+    Attributes:
+        mode:      "fifo" | "drop_oldest" | "latest_only"
+        max_size:  drop_oldest 模式的佇列上限（其他模式無視）。預設 3。
+                   1 = 單槽（等同 latest_only）
+                   3 = 容忍 600ms 抖動 (5fps × 3)
+                   10 = 接近 fifo，drop 少但 latency 高
+    """
+    mode: str = "fifo"
+    max_size: int = 3
+
+
+@dataclass
 class DispatcherConfig:
     """Dispatcher（EC2）設定。
 
@@ -174,11 +240,13 @@ class DispatcherConfig:
                           例如 "ws://desktop-5080:8765/ws"
                           或 Tailscale IP: "ws://100.x.x.x:8765/ws"
         ice_servers:      STUN/TURN 伺服器列表（與 Edge 側需一致）
+        frame_buffer:     Frame buffer 策略（fifo / drop_oldest / latest_only）
     """
     id: str = "dispatcher-001"
     signaling: SignalingConfig = field(default_factory=SignalingConfig)
     inference_ws_url: str = "ws://localhost:8765/ws"
     ice_servers: List[ICEServer] = field(default_factory=lambda: [ICEServer()])
+    frame_buffer: FrameBufferConfig = field(default_factory=FrameBufferConfig)
 
 
 @dataclass

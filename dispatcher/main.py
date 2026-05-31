@@ -90,9 +90,29 @@ class Dispatcher:
         self._peers: dict = {}     # edge_id → RTCPeerConnection
         self._channels: dict = {}  # edge_id → RTCDataChannel
 
+        # ── Frame buffer 模式（fifo / drop_oldest / latest_only）──
+        # 由 config.frame_buffer 控制。詳見 FrameBufferConfig docstring。
+        self._buffer_mode = config.frame_buffer.mode
+        self._buffer_max_size = config.frame_buffer.max_size
+        if self._buffer_mode not in ("fifo", "drop_oldest", "latest_only"):
+            raise ValueError(
+                f"frame_buffer.mode 必須是 fifo / drop_oldest / latest_only，"
+                f"收到: {self._buffer_mode}"
+            )
+        logger.info(
+            "Frame buffer 模式: %s (max_size=%d)",
+            self._buffer_mode,
+            1 if self._buffer_mode == "latest_only" else self._buffer_max_size,
+        )
+
+        # drop_oldest / latest_only 用：per-edge queue + worker task
+        self._frame_queues: dict = {}    # edge_id → asyncio.Queue
+        self._worker_tasks: dict = {}    # edge_id → asyncio.Task
+
         # ── Debug 計數器：每 N 幀印一次 log，確認資料流動 ──
-        self._frames_received: dict = {}   # edge_id → 收到的幀數
+        self._frames_received: dict = {}   # edge_id → 從 edge 收到的幀數
         self._frames_forwarded: dict = {}  # edge_id → 成功轉發到 inference 的幀數
+        self._frames_dropped: dict = {}    # edge_id → 因 buffer 滿被丟掉的幀數（drop_oldest/latest_only 才有）
         self._results_returned: dict = {}  # edge_id → 從 inference 收到並回傳給 edge 的結果數
         self._log_every = 30               # 每 30 幀 / 結果印一次進度
 
@@ -132,6 +152,10 @@ class Dispatcher:
         4. HTTP session
         """
         self._running = False
+        # 取消所有 frame worker
+        for edge_id, task in self._worker_tasks.items():
+            if not task.done():
+                task.cancel()
         for edge_id, pc in self._peers.items():
             logger.info("關閉與 Edge %s 的連線", edge_id)
             await pc.close()
@@ -224,7 +248,13 @@ class Dispatcher:
         # 順便清掉舊的 debug 計數器（重新從 0 開始）
         self._frames_received.pop(edge_id, None)
         self._frames_forwarded.pop(edge_id, None)
+        self._frames_dropped.pop(edge_id, None)
         self._results_returned.pop(edge_id, None)
+        # 清掉舊的 queue 跟 worker（避免新 worker 從舊 queue 拿）
+        old_worker = self._worker_tasks.pop(edge_id, None)
+        if old_worker is not None and not old_worker.done():
+            old_worker.cancel()
+        self._frame_queues.pop(edge_id, None)
         if old_pc is not None:
             logger.info("清理舊的 PeerConnection: edge=%s", edge_id)
             try:
@@ -298,11 +328,14 @@ class Dispatcher:
                         )
                     self._frames_received[edge_id] = n + 1
 
-                    # 二進位 = 影像幀 → 轉發到 Inference Server
-                    asyncio.create_task(self._forward_to_inference(edge_id, data))
+                    # 二進位 = 影像幀 → 依 buffer 模式處理
+                    self._enqueue_frame(edge_id, data)
                 elif isinstance(data, str):
                     # 文字 = 控制訊息（目前只有 PING）
                     asyncio.create_task(self._handle_dc_text(edge_id, channel, data))
+
+            # 為這個 edge 啟動 worker（drop_oldest / latest_only 模式才需要）
+            self._ensure_worker(edge_id)
 
         # ── PeerConnection 狀態監控 ──
         @pc.on("connectionstatechange")
@@ -423,6 +456,93 @@ class Dispatcher:
 
         # 背景持續接收推論結果
         asyncio.create_task(self._inference_recv_loop())
+
+    # ================================================================
+    # Frame buffer 三種模式
+    # ================================================================
+
+    def _enqueue_frame(self, edge_id: str, raw_frame: bytes):
+        """依 frame_buffer.mode 把 frame 排進對應的處理路徑。
+
+        - fifo:         直接 create_task 並行轉發（不過 queue）
+        - drop_oldest:  put 進 bounded queue，滿了就先 get 掉最舊的
+        - latest_only:  put 進 maxsize=1 queue，滿了就替換
+        """
+        if self._buffer_mode == "fifo":
+            # 原本行為：每個 frame 一個 task，全部並行送
+            asyncio.create_task(self._forward_to_inference(edge_id, raw_frame))
+            return
+
+        # 取或建 queue
+        q = self._frame_queues.get(edge_id)
+        if q is None:
+            maxsize = 1 if self._buffer_mode == "latest_only" else self._buffer_max_size
+            q = asyncio.Queue(maxsize=maxsize)
+            self._frame_queues[edge_id] = q
+
+        # Queue 滿了：丟最舊的
+        if q.full():
+            try:
+                q.get_nowait()
+                dropped = self._frames_dropped.get(edge_id, 0) + 1
+                self._frames_dropped[edge_id] = dropped
+                if dropped % self._log_every == 0:
+                    logger.info(
+                        "✂ buffer 滿丟舊 frame: edge=%s, dropped 累計=%d (mode=%s)",
+                        edge_id, dropped, self._buffer_mode,
+                    )
+            except asyncio.QueueEmpty:
+                pass
+
+        # 不 await（_enqueue_frame 是 sync 回呼），直接 nowait
+        try:
+            q.put_nowait(raw_frame)
+        except asyncio.QueueFull:
+            # 理論上不會（前面已 get），但保險
+            self._frames_dropped[edge_id] = self._frames_dropped.get(edge_id, 0) + 1
+
+    def _ensure_worker(self, edge_id: str):
+        """確保 edge 有一個 worker task 在處理它的 queue。
+
+        FIFO 模式不需要 worker（直接 create_task），只在 queue 模式建立。
+        """
+        if self._buffer_mode == "fifo":
+            return
+
+        task = self._worker_tasks.get(edge_id)
+        if task is not None and not task.done():
+            return  # 已有 worker
+
+        self._worker_tasks[edge_id] = asyncio.create_task(
+            self._frame_worker(edge_id)
+        )
+        logger.info("啟動 frame worker: edge=%s, mode=%s",
+                    edge_id, self._buffer_mode)
+
+    async def _frame_worker(self, edge_id: str):
+        """單 edge 的 worker，從 queue 拿 frame 序列轉發給 inference。
+
+        為什麼用 worker 而不是 create_task 並行：
+          drop_oldest / latest_only 的重點是「同一時間只有 1 個 frame in-flight」。
+          並行轉發會讓 dropping 邏輯失效（多個 task 同時 await send_bytes，無法控制積壓）。
+          single worker 確保 inference 一空閒就拿最新的 frame，達成「永遠處理最新狀態」。
+        """
+        q = self._frame_queues[edge_id]
+        while self._running:
+            try:
+                raw_frame = await q.get()
+            except asyncio.CancelledError:
+                break
+
+            # edge 已斷線就跳出
+            if edge_id not in self._channels:
+                logger.info("frame worker 結束: edge=%s 已斷線", edge_id)
+                return
+
+            try:
+                await self._forward_to_inference(edge_id, raw_frame)
+            except Exception:
+                logger.exception("worker 轉發失敗: edge=%s", edge_id)
 
     async def _forward_to_inference(self, edge_id: str, raw_frame: bytes):
         """將 Edge 的影像幀轉發到 Inference Server。

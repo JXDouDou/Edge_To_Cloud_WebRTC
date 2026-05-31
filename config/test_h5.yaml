@@ -45,10 +45,12 @@ edge:
   signaling:
     url: "ws://localhost:8080/ws"
   ice_servers: []
+  # ── Failover 設定 ──
+  # 本機 LAN 推薦激進值（切換約 5s）；環境別調整見 shared/config.py FailoverConfig
   failover:
-    health_check_interval: 2.0
-    max_failures: 3
-    recovery_delay: 3.0
+    health_check_interval: 1.0
+    max_failures: 2
+    recovery_delay: 1.5
 
 dispatchers:
   - id: "dispatcher-001"

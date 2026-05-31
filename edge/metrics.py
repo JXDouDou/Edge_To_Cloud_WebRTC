@@ -124,6 +124,14 @@ class MetricsCollector:
             self._sent_count, n_completed, n_no_result,
             self._send_failed, elapsed,
         )
+        # 快速亂序預覽（詳細數字寫在 summary.txt）
+        if n_completed > 1:
+            seqs = [r["seq"] for r in self._completed]
+            ooo = sum(1 for i in range(1, len(seqs)) if seqs[i - 1] > seqs[i])
+            logger.info(
+                "結果亂序: %d/%d (%.2f%%)",
+                ooo, len(seqs) - 1, 100 * ooo / (len(seqs) - 1),
+            )
 
     def _write_csv(self):
         if not self._completed:
@@ -146,6 +154,34 @@ class MetricsCollector:
                 return None
             s = sorted(data)
             return s[min(int(len(s) * p / 100), len(s) - 1)]
+
+        # ── 亂序率統計 ──────────────────────────────────────
+        # self._completed 是「按結果回到 edge 的順序」紀錄的。
+        # 每筆有 seq（edge 送出時的順序號）。
+        # 如果第 i 筆的 seq 比第 i-1 筆小，代表「比較晚送出的反而比較早回來」=亂序。
+        #
+        # 為什麼會亂序：
+        # - data channel 設定 ordered=False（追求低延遲，不保證順序）
+        # - dispatcher 用 asyncio.create_task 並行轉發，多 frame 可能交換順序
+        # - 網路本身（5G / Tailscale）也可能交換 UDP 封包順序
+        #
+        # 這個指標讓你看「實際亂序頻率」，決定是否需要：
+        #   - 改成 ordered=True（用 latency 換 order）
+        #   - 在 edge 端依 seq 排序結果再消費
+        seqs_in_recv_order = [r["seq"] for r in self._completed]
+        out_of_order_count = 0
+        max_seq_diff = 0  # 最大「往回退」距離
+        for i in range(1, len(seqs_in_recv_order)):
+            diff = seqs_in_recv_order[i - 1] - seqs_in_recv_order[i]
+            if diff > 0:
+                out_of_order_count += 1
+                if diff > max_seq_diff:
+                    max_seq_diff = diff
+        ooo_pct = (
+            round(100 * out_of_order_count / (len(seqs_in_recv_order) - 1), 2)
+            if len(seqs_in_recv_order) > 1
+            else 0.0
+        )
 
         summary = {
             "elapsed_sec": round(elapsed, 1),
@@ -180,6 +216,13 @@ class MetricsCollector:
                 "last":  round(predictions[-1], 4),
                 "avg":   round(sum(predictions) / len(predictions), 4),
             } if predictions else None),
+            "ordering": {
+                # 結果回 edge 的順序中，「seq 比上一筆小」出現幾次 / 佔比
+                "out_of_order_count": out_of_order_count,
+                "out_of_order_pct": ooo_pct,
+                # 最大往回退距離（例：上一筆 seq=100、這筆 seq=95 → max_seq_diff 至少 5）
+                "max_seq_step_back": max_seq_diff,
+            },
         }
 
         # JSON
@@ -220,6 +263,20 @@ class MetricsCollector:
                 f.write(f"  min  : {pr['min']}\n")
                 f.write(f"  max  : {pr['max']}\n")
                 f.write(f"  avg  : {pr['avg']}\n")
+
+            od = summary["ordering"]
+            f.write("\n[結果回流順序]\n")
+            f.write(f"  亂序次數:        {od['out_of_order_count']}\n")
+            f.write(f"  亂序比例:        {od['out_of_order_pct']} %\n")
+            f.write(f"  最大往回退距離:  {od['max_seq_step_back']} (seq)\n")
+            if od['out_of_order_pct'] == 0:
+                f.write("  → 結果全部按 seq 順序回傳\n")
+            elif od['out_of_order_pct'] < 1:
+                f.write("  → 幾乎都按順序，偶爾亂序\n")
+            elif od['out_of_order_pct'] < 5:
+                f.write("  → 輕微亂序，正常範圍\n")
+            else:
+                f.write("  → 亂序明顯，若 prediction 依賴順序可考慮 ordered=True\n")
 
     def _try_plot(self):
         """畫圖。沒裝 matplotlib 就跳過。"""
