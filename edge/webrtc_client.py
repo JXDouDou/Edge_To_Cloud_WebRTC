@@ -338,15 +338,20 @@ class WebRTCClient:
             Args:
                 raw: str 或 bytes。推論結果為 JSON 字串（str）。
             """
+            # ── Liveness：收到「任何」來自 dispatcher 的訊息都代表它還活著 ──
+            # 健康檢查不該只認 PONG。實務上（5G/Tailscale）PONG 偶爾掉，
+            # 但 RESULT 一直在回 —— 那 dispatcher 顯然沒死。只認 PONG 會誤判、
+            # 一直印「PING 已 Ns 無回應」並空觸發 failover。
+            # 改成「收到任何訊息就更新存活時間」：串流時靠 RESULT、閒置時靠 PONG。
+            # dispatcher 真的死掉時 RESULT 和 PONG 會一起停 → 仍能正確 failover。
+            self._last_pong_time = time.time()
             if isinstance(raw, str):
                 try:
                     msg = Message.deserialize(raw)
                     if msg.type == MsgType.RESULT:
                         asyncio.create_task(self.on_result(msg.payload))
                     elif msg.type == MsgType.PONG:
-                        # 健康檢查 PONG 回覆 — 記錄收到時間以便偵測 dispatcher 死掉
                         rtt = time.time() - msg.payload.get("ping_ts", 0)
-                        self._last_pong_time = time.time()
                         logger.debug("PONG from %s, RTT=%.1fms", self._current_disp, rtt * 1000)
                 except Exception:
                     logger.exception("解析訊息失敗")
@@ -455,11 +460,13 @@ class WebRTCClient:
                 if self._dc.readyState != "open":
                     continue
 
-                # ── 主動偵測：PONG 超時？──
+                # ── 主動偵測：超時無任何訊息？──
+                # _last_pong_time 現在是「最後一次收到任何 dispatcher 訊息」的時間
+                # （RESULT 或 PONG 都算），所以串流中只要結果有回就不會誤判。
                 elapsed = time.time() - self._last_pong_time
                 if elapsed > pong_timeout:
                     logger.warning(
-                        "Dispatcher %s PING 已 %.1fs 無回應（超過 %.1fs），觸發 failover",
+                        "Dispatcher %s 已 %.1fs 無任何回應（PONG/結果，超過 %.1fs），觸發 failover",
                         self._current_disp, elapsed, pong_timeout,
                     )
                     self._trigger_failover()

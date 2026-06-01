@@ -114,6 +114,7 @@ class Dispatcher:
         self._frames_forwarded: dict = {}  # edge_id → 成功轉發到 inference 的幀數
         self._frames_dropped: dict = {}    # edge_id → 因 buffer 滿被丟掉的幀數（drop_oldest/latest_only 才有）
         self._results_returned: dict = {}  # edge_id → 從 inference 收到並回傳給 edge 的結果數
+        self._pings_seen: dict = {}        # edge_id → 收到的 PING 數（確認有在回 PONG）
         self._log_every = 30               # 每 30 幀 / 結果印一次進度
 
         self._running = True
@@ -250,6 +251,7 @@ class Dispatcher:
         self._frames_forwarded.pop(edge_id, None)
         self._frames_dropped.pop(edge_id, None)
         self._results_returned.pop(edge_id, None)
+        self._pings_seen.pop(edge_id, None)
         # 清掉舊的 queue 跟 worker（避免新 worker 從舊 queue 拿）
         old_worker = self._worker_tasks.pop(edge_id, None)
         if old_worker is not None and not old_worker.done():
@@ -428,6 +430,12 @@ class Dispatcher:
                     payload=msg.payload,  # 原封不動回傳 ping_ts
                 )
                 channel.send(pong.serialize())
+                # ── Debug：每 N 次 PING 印一次，確認本台有在回 PONG ──
+                # 若 EC2 上看不到這行，代表跑的是舊 code 或 PING 沒進來。
+                n = self._pings_seen.get(edge_id, 0)
+                if n % self._log_every == 0:
+                    logger.info("♡ 收到 PING 並已回 PONG: edge=%s, count=%d", edge_id, n)
+                self._pings_seen[edge_id] = n + 1
         except Exception:
             logger.exception("處理 DC 文字訊息失敗: edge=%s", edge_id)
 
@@ -513,6 +521,15 @@ class Dispatcher:
         if task is not None and not task.done():
             return  # 已有 worker
 
+        # ⚠️ 必須在啟動 worker 前先把 queue 建好。
+        # worker 一啟動就 await queue.get()，若此時 queue 還沒被建立
+        # （第一張 frame 進 _enqueue_frame 才 lazy 建），worker 會 KeyError
+        # 當場死掉（且 asyncio logger 設成 CRITICAL → 靜音），
+        # 之後沒人 drain，queue 卡滿 → 每張都被 drop。
+        if edge_id not in self._frame_queues:
+            maxsize = 1 if self._buffer_mode == "latest_only" else self._buffer_max_size
+            self._frame_queues[edge_id] = asyncio.Queue(maxsize=maxsize)
+
         self._worker_tasks[edge_id] = asyncio.create_task(
             self._frame_worker(edge_id)
         )
@@ -527,7 +544,11 @@ class Dispatcher:
           並行轉發會讓 dropping 邏輯失效（多個 task 同時 await send_bytes，無法控制積壓）。
           single worker 確保 inference 一空閒就拿最新的 frame，達成「永遠處理最新狀態」。
         """
-        q = self._frame_queues[edge_id]
+        # 防禦：queue 應由 _ensure_worker 先建好；萬一沒有就不啟動，避免 KeyError
+        q = self._frame_queues.get(edge_id)
+        if q is None:
+            logger.warning("frame worker 找不到 queue，結束: edge=%s", edge_id)
+            return
         while self._running:
             try:
                 raw_frame = await q.get()
