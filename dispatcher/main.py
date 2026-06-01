@@ -598,6 +598,9 @@ class Dispatcher:
                         edge_id = msg.payload.get("edge_id", "")
                         dc = self._channels.get(edge_id)
                         if dc and dc.readyState == "open":
+                            # 注入本台 dispatcher id，讓 Edge 端能標出
+                            # 「這張結果是哪台 dispatcher 服務的」→ 量測 failover 切換點
+                            msg.payload["dispatcher_id"] = self.id
                             # 透過 Data Channel 回傳結果給 Edge
                             dc.send(msg.serialize())
                             # ── Debug：每 N 筆印一次，確認結果有回傳 ──
