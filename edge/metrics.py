@@ -27,6 +27,7 @@ import csv
 import json
 import logging
 import time
+from collections import Counter
 from pathlib import Path
 
 logger = logging.getLogger("edge.metrics")
@@ -88,6 +89,9 @@ class MetricsCollector:
 
         inner = payload.get("result", {})
         prediction = inner.get("prediction")  # Keras 回歸模型才會有
+        # 哪台 dispatcher 服務了這張結果（由 dispatcher 在回傳前注入）。
+        # 用來偵測 failover 切換點：連續兩筆 dispatcher_id 不同 = 發生切換。
+        dispatcher_id = payload.get("dispatcher_id", "")
 
         self._completed.append({
             "frame_id": frame_id,
@@ -97,6 +101,7 @@ class MetricsCollector:
             "latency_ms": latency_ms,
             "size_bytes": size,
             "prediction": prediction,
+            "dispatcher_id": dispatcher_id,
         })
 
     # ── Shutdown：寫檔 + 畫圖 ──────────────────────────────
@@ -132,6 +137,15 @@ class MetricsCollector:
                 "結果亂序: %d/%d (%.2f%%)",
                 ooo, len(seqs) - 1, 100 * ooo / (len(seqs) - 1),
             )
+            # 快速 failover 預覽
+            switches = 0
+            for i in range(1, n_completed):
+                p = self._completed[i - 1].get("dispatcher_id", "")
+                c = self._completed[i].get("dispatcher_id", "")
+                if c != p and p and c:
+                    switches += 1
+            if switches:
+                logger.info("Failover 切換次數: %d（細節見 summary.txt）", switches)
 
     def _write_csv(self):
         if not self._completed:
@@ -183,6 +197,39 @@ class MetricsCollector:
             else 0.0
         )
 
+        # ── Failover / dispatcher 統計 ──────────────────────
+        # _completed 是按「結果回到 edge 的順序」記的（recv_time 單調遞增）。
+        # 每筆有 dispatcher_id（哪台 dispatcher 服務了這張）。
+        # 連續兩筆的 dispatcher_id 不同 → 那一刻發生了 failover 切換。
+        #
+        # 切換空檔 (gap_ms) = 新 dispatcher 第一筆結果的 recv_time
+        #                     − 舊 dispatcher 最後一筆結果的 recv_time
+        # 這個空檔約等於「edge 偵測失敗 → 切到備援 → 串流恢復」的可見停頓。
+        dispatcher_dist = Counter(
+            r.get("dispatcher_id", "") for r in self._completed
+        )
+        switch_events = []
+        for i in range(1, len(self._completed)):
+            prev_d = self._completed[i - 1].get("dispatcher_id", "")
+            cur_d = self._completed[i].get("dispatcher_id", "")
+            if cur_d != prev_d and prev_d and cur_d:
+                gap_ms = round(
+                    (self._completed[i]["recv_time"]
+                     - self._completed[i - 1]["recv_time"]) * 1000.0, 1
+                )
+                switch_events.append({
+                    "from": prev_d,
+                    "to": cur_d,
+                    # 切換發生在跑了多少秒時（以新 dispatcher 第一筆為準）
+                    "at_sec": round(
+                        self._completed[i]["recv_time"] - self._start_time, 1
+                    ),
+                    # 可見停頓：舊 dispatcher 最後一筆 → 新 dispatcher 第一筆
+                    "gap_ms": gap_ms,
+                    # 切換時新 dispatcher 第一筆的 seq（用來對照丟了哪些 frame）
+                    "resumed_at_seq": self._completed[i]["seq"],
+                })
+
         summary = {
             "elapsed_sec": round(elapsed, 1),
             "elapsed_human": (
@@ -222,6 +269,14 @@ class MetricsCollector:
                 "out_of_order_pct": ooo_pct,
                 # 最大往回退距離（例：上一筆 seq=100、這筆 seq=95 → max_seq_diff 至少 5）
                 "max_seq_step_back": max_seq_diff,
+            },
+            "failover": {
+                # 每台 dispatcher 服務了幾張結果
+                "dispatcher_distribution": dict(dispatcher_dist),
+                # 偵測到的切換次數
+                "switch_count": len(switch_events),
+                # 每次切換的細節（from/to/at_sec/gap_ms/resumed_at_seq）
+                "switches": switch_events,
             },
         }
 
@@ -278,6 +333,25 @@ class MetricsCollector:
             else:
                 f.write("  → 亂序明顯，若 prediction 依賴順序可考慮 ordered=True\n")
 
+            fo = summary["failover"]
+            f.write("\n[Dispatcher / Failover]\n")
+            if fo["dispatcher_distribution"]:
+                f.write("  各 dispatcher 服務筆數:\n")
+                for did, cnt in fo["dispatcher_distribution"].items():
+                    label = did if did else "(未知/舊版未注入 id)"
+                    f.write(f"    {label}: {cnt}\n")
+            f.write(f"  切換次數:        {fo['switch_count']}\n")
+            if fo["switch_count"] == 0:
+                f.write("  → 全程由同一台 dispatcher 服務，未發生 failover\n")
+            else:
+                for i, sw in enumerate(fo["switches"], 1):
+                    f.write(
+                        f"  切換 #{i}: {sw['from']} → {sw['to']}  "
+                        f"在 {sw['at_sec']}s 時，"
+                        f"可見停頓 {sw['gap_ms']} ms，"
+                        f"恢復於 seq={sw['resumed_at_seq']}\n"
+                    )
+
     def _try_plot(self):
         """畫圖。沒裝 matplotlib 就跳過。"""
         if not self._completed:
@@ -303,12 +377,27 @@ class MetricsCollector:
             if records[i]["prediction"] is not None
         ]
 
-        # ── 圖 1: 延遲隨時間 ──
+        # 找出 failover 切換點（dispatcher_id 變動的那一筆），標在圖上
+        switch_x = []
+        for i in range(1, len(records)):
+            prev_d = records[i - 1].get("dispatcher_id", "")
+            cur_d = records[i].get("dispatcher_id", "")
+            if cur_d != prev_d and prev_d and cur_d:
+                switch_x.append(rel_times_min[i])
+
+        # ── 圖 1: 延遲隨時間（含 failover 切換標記）──
         plt.figure(figsize=(10, 4))
         plt.plot(rel_times_min, latencies, linewidth=0.6, color="tab:blue")
+        for j, x in enumerate(switch_x):
+            plt.axvline(
+                x, color="tab:red", linestyle="--", linewidth=1.0, alpha=0.8,
+                label="dispatcher switch" if j == 0 else None,
+            )
         plt.xlabel("Time since start (min)")
         plt.ylabel("Latency (ms)")
         plt.title(f"End-to-end Latency over Time  (n={len(latencies)})")
+        if switch_x:
+            plt.legend(loc="upper right", fontsize=8)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.savefig(self.output_dir / "latency_over_time.png", dpi=100)
