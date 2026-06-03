@@ -56,20 +56,23 @@ class MetricsCollector:
 
     # ── Hot path methods（每幀都會呼叫，要快）──────────────
 
-    def record_sent(self, frame_id: str, seq: int, size: int, sent_ok: bool):
+    def record_sent(self, frame_id: str, seq: int, size: int, sent_ok: bool,
+                    capture_ms: float = 0.0, preprocess_ms: float = 0.0):
         """記錄一幀送出事件。
 
         Args:
-            frame_id: 幀的唯一 ID（同 header['frame_id']）
-            seq:      序號
-            size:     JPEG 大小（bytes）
-            sent_ok:  send_frame() 的回傳值；False 代表 data channel 沒接受
+            frame_id:      幀的唯一 ID（同 header['frame_id']）
+            seq:           序號
+            size:          JPEG 大小（bytes）
+            sent_ok:       send_frame() 的回傳值；False 代表 data channel 沒接受
+            capture_ms:    擷取(grab+解碼)耗時 ms，不含 FPS 節流 sleep（可選）
+            preprocess_ms: 前處理(ROI+resize+JPEG)耗時 ms（可選）
         """
         self._sent_count += 1
         if not sent_ok:
             self._send_failed += 1
             return  # 沒成功送出的不進 _pending，不會等回應
-        self._pending[frame_id] = (seq, time.time(), size)
+        self._pending[frame_id] = (seq, time.time(), size, capture_ms, preprocess_ms)
 
     def record_received(self, payload: dict):
         """記錄一筆推論結果回來。
@@ -84,7 +87,7 @@ class MetricsCollector:
         if info is None:
             # 結果回來時對應的送出紀錄已經沒了（極少見：重複收、超時清理）
             return
-        seq, send_time, size = info
+        seq, send_time, size, capture_ms, preprocess_ms = info
         latency_ms = (recv_time - send_time) * 1000.0
 
         inner = payload.get("result", {})
@@ -102,6 +105,9 @@ class MetricsCollector:
             "size_bytes": size,
             "prediction": prediction,
             "dispatcher_id": dispatcher_id,
+            # 注意：以下兩項是「送出前」的本地處理耗時，不含在 latency_ms 內。
+            "capture_ms": round(capture_ms, 2),
+            "preprocess_ms": round(preprocess_ms, 2),
         })
 
     # ── Shutdown：寫檔 + 畫圖 ──────────────────────────────
@@ -230,6 +236,14 @@ class MetricsCollector:
                     "resumed_at_seq": self._completed[i]["seq"],
                 })
 
+        # ── 送出前本地處理耗時 + JPEG 大小統計 ─────────────────
+        # capture_ms / preprocess_ms 是「送出前」就花掉的時間，
+        # 不含在 latency_ms（latency_ms 只算送出→收到結果）。
+        # 真實「快門→結果」≈ capture_ms + preprocess_ms + latency_ms。
+        cap_list = [r["capture_ms"] for r in self._completed]
+        pp_list = [r["preprocess_ms"] for r in self._completed]
+        size_list = [r["size_bytes"] for r in self._completed]
+
         summary = {
             "elapsed_sec": round(elapsed, 1),
             "elapsed_human": (
@@ -277,6 +291,36 @@ class MetricsCollector:
                 "switch_count": len(switch_events),
                 # 每次切換的細節（from/to/at_sec/gap_ms/resumed_at_seq）
                 "switches": switch_events,
+            },
+            # 送出前的本地處理（不含在 latency_ms）
+            "local_pipeline": {
+                "capture_ms": {
+                    "avg": round(sum(cap_list) / len(cap_list), 2) if cap_list else None,
+                    "p50": round(pct(cap_list, 50), 2) if cap_list else None,
+                    "p95": round(pct(cap_list, 95), 2) if cap_list else None,
+                    "max": round(max(cap_list), 2) if cap_list else None,
+                },
+                "preprocess_ms": {
+                    "avg": round(sum(pp_list) / len(pp_list), 2) if pp_list else None,
+                    "p50": round(pct(pp_list, 50), 2) if pp_list else None,
+                    "p95": round(pct(pp_list, 95), 2) if pp_list else None,
+                    "max": round(max(pp_list), 2) if pp_list else None,
+                },
+                "jpeg_bytes": {
+                    "avg": round(sum(size_list) / len(size_list), 1) if size_list else None,
+                    "min": min(size_list) if size_list else None,
+                    "max": max(size_list) if size_list else None,
+                },
+                # 估計的真實端到端（快門→結果）平均 = 擷取+前處理+傳輸推論
+                "est_glass_to_result_avg_ms": (
+                    round(
+                        (sum(cap_list) / len(cap_list))
+                        + (sum(pp_list) / len(pp_list))
+                        + (sum(latencies) / len(latencies)),
+                        1,
+                    )
+                    if cap_list and pp_list and latencies else None
+                ),
             },
         }
 
@@ -351,6 +395,22 @@ class MetricsCollector:
                         f"可見停頓 {sw['gap_ms']} ms，"
                         f"恢復於 seq={sw['resumed_at_seq']}\n"
                     )
+
+            lp = summary["local_pipeline"]
+            f.write("\n[送出前本地處理] (不含在上面的端到端延遲內)\n")
+            cm, pm, jb = lp["capture_ms"], lp["preprocess_ms"], lp["jpeg_bytes"]
+            f.write(f"  擷取 capture_ms     : avg={cm['avg']}  p95={cm['p95']}  max={cm['max']}\n")
+            f.write(f"  前處理 preprocess_ms: avg={pm['avg']}  p95={pm['p95']}  max={pm['max']}\n")
+            if jb["avg"] is not None:
+                f.write(
+                    f"  JPEG 大小 bytes     : avg={jb['avg']}  "
+                    f"min={jb['min']}  max={jb['max']}\n"
+                )
+            if lp["est_glass_to_result_avg_ms"] is not None:
+                f.write(
+                    f"  ≈ 真實端到端(快門→結果) avg = capture + preprocess + 延遲 "
+                    f"= {lp['est_glass_to_result_avg_ms']} ms\n"
+                )
 
     def _try_plot(self):
         """畫圖。沒裝 matplotlib 就跳過。"""
