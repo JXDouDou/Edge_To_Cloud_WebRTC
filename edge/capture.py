@@ -51,6 +51,10 @@ class FrameCapture:
         self._frame_interval = 1.0 / max(config.fps, 1)
         self._last_frame_time = 0.0
 
+        # 最近一次 read() 真正花在 grab+解碼的時間（毫秒），不含 FPS 節流 sleep。
+        # 供 metrics 統計「擷取成本」用；read() 每次會更新。
+        self.last_capture_ms = 0.0
+
         # 影片模式：依 config.loop 決定播完自動迴圈與否（預設 True，向後相容）
         # 攝影機模式：永遠不迴圈（連續即時串流，沒有「結束」的概念）
         self._loop = (config.mode == "video") and config.loop
@@ -195,6 +199,10 @@ class FrameCapture:
         if elapsed < self._frame_interval:
             time.sleep(self._frame_interval - elapsed)
 
+        # 節流 sleep 之後才開始計時，量到的才是「真正的 grab+解碼成本」，
+        # 不會被 5fps 那種故意的閒置 sleep 灌水。
+        _decode_start = time.time()
+
         # ── 影片模式：丟掉中間的 frame，讓影片以真實時間速度推進 ──
         # 例如 30fps 影片要在 5fps 取樣下保持真實時間播放，跳過 5 格、留 1 格
         # （camera 模式 self._frames_to_skip == 0，這個迴圈不會執行）
@@ -216,6 +224,8 @@ class FrameCapture:
 
         if ret:
             self._last_frame_time = time.time()
+        # 記錄這次擷取（grab+解碼）耗時，供 metrics 用（不含上面的節流 sleep）
+        self.last_capture_ms = (time.time() - _decode_start) * 1000.0
         return ret, frame
 
     def release(self):

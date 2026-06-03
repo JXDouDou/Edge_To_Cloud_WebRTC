@@ -20,6 +20,12 @@
 
     # 反過來：本機 config 是 video，但臨時想接 USB webcam
     python edge/main.py --config config/test.yaml --mode camera --source 0
+
+    # 收集指標（延遲 / 丟包 / failover 切換），結束時輸出 CSV + summary + 圖表
+    python edge/main.py --config config/staging_video.yaml --metrics
+
+    # 影片播一次就退出（debug 用，不重播）；壓力測試全速灌
+    python edge/main.py --config config/staging_video.yaml --loop no --sample-mode fast_replay
 """
 
 import argparse
@@ -29,6 +35,16 @@ import sys
 import time
 import uuid
 from pathlib import Path
+
+# Windows 主控台預設 cp932/cp950，無法輸出中文（含 argparse --help 的說明文字）。
+# 強制 stdout/stderr 走 UTF-8，否則 `python edge/main.py --help` 會 UnicodeEncodeError。
+# （Linux/Pi 本來就是 UTF-8，這段不影響。）
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass  # Python < 3.7 沒有 reconfigure
 
 # 確保專案根目錄在 Python 路徑中，讓 shared/ 等模組可被 import
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -74,7 +90,13 @@ async def run(
     5. 推論結果由 WebRTC data channel 回傳，controller 非同步處理
 
     Args:
-        config_path: YAML 設定檔路徑
+        config_path:          YAML 設定檔路徑
+        mode_override:        覆寫 capture.mode（"video" / "camera"，空字串 = 不覆寫）
+        source_override:      覆寫 capture.source（影片路徑或相機索引，空 = 不覆寫）
+        metrics_dir:          指標輸出目錄；空字串 = 不收集指標
+        loop_override:        覆寫 capture.loop（"yes" / "no"，空 = 不覆寫；僅 video 模式）
+        sample_mode_override: 覆寫 capture.sample_mode（real_time / all_frames /
+                              fast_replay，空 = 不覆寫；僅 video 模式）
 
     Note:
         capture.read() 是阻塞操作（會 sleep 做 FPS 節流），
@@ -169,8 +191,10 @@ async def run(
                 logger.warning("影像擷取結束")
                 break
 
-            # 前處理：ROI + resize + JPEG 壓縮
+            # 前處理：ROI + resize + JPEG 壓縮（量測耗時，前處理沒有節流 sleep，可直接量）
+            _pp_start = time.time()
             jpeg = preprocessor.process(frame)
+            preprocess_ms = (time.time() - _pp_start) * 1000.0
 
             # 組裝幀 header（中繼資訊，會隨幀一起傳送）
             header = {
@@ -183,8 +207,13 @@ async def run(
             sent = await client.send_frame(header, jpeg)
 
             # 記錄送出事件（給 metrics 用）
+            # capture_ms 取自 capture.read() 內部量的「不含節流 sleep」的擷取成本
             if metrics:
-                metrics.record_sent(header["frame_id"], seq, len(jpeg), sent)
+                metrics.record_sent(
+                    header["frame_id"], seq, len(jpeg), sent,
+                    capture_ms=capture.last_capture_ms,
+                    preprocess_ms=preprocess_ms,
+                )
 
             # 每 30 幀印一次進度（方便確認串流是否正常）
             if seq % 30 == 0:
