@@ -44,6 +44,10 @@ config/staging_video.yaml
 config/prod.yaml
 config/_runtime.yaml          # run_local_test.py 動態產生的暫存檔，不該進 repo
 
+# ── Pi 本地硬體控制（只存在於 Pi，含 GPIO 碼，不該進 repo）──
+# 用 edge/pump_local.py.example 當範本複製過去
+edge/pump_local.py
+
 # ── OS ──
 .DS_Store
 Thumbs.db

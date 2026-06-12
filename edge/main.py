@@ -26,6 +26,9 @@
 
     # 影片播一次就退出（debug 用，不重播）；壓力測試全速灌
     python edge/main.py --config config/staging_video.yaml --loop no --sample-mode fast_replay
+
+    # 注液到目標量自動停泵：連續 5 張 prediction < 10 就觸發 pump_stop_action()
+    python edge/main.py --config config/staging.yaml --stop-target 10 --stop-frames 5
 """
 
 import argparse
@@ -55,6 +58,8 @@ from edge.preprocess import Preprocessor
 from edge.webrtc_client import WebRTCClient
 from edge.controller import Controller
 from edge.metrics import MetricsCollector
+from edge.stop_monitor import StopMonitor
+from edge.pump import get_pump
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +84,8 @@ async def run(
     metrics_dir: str = "",
     loop_override: str = "",
     sample_mode_override: str = "",
+    stop_target: float = 10.0,
+    stop_frames: int = 5,
 ):
     """Edge 主要執行流程。
 
@@ -97,6 +104,9 @@ async def run(
         loop_override:        覆寫 capture.loop（"yes" / "no"，空 = 不覆寫；僅 video 模式）
         sample_mode_override: 覆寫 capture.sample_mode（real_time / all_frames /
                               fast_replay，空 = 不覆寫；僅 video 模式）
+        stop_target:          停止目標值；prediction 連續低於此值即觸發停止動作。
+                              <= 0 表示停用停止監控。
+        stop_frames:          連續幾張 prediction 低於 target 才觸發（去抖）。
 
     Note:
         capture.read() 是阻塞操作（會 sleep 做 FPS 節流），
@@ -151,14 +161,35 @@ async def run(
         metrics = MetricsCollector(metrics_dir)
         logger.info("Metrics 收集已啟用，輸出位置: %s", metrics_dir)
 
-        # 把 metrics.record_received 串到 controller.handle_result 前面
+    # ── 泵控制 + 停止監控（依 prediction，可選）──
+    # 啟用時：串流開始 → 開泵；連續 stop_frames 張 prediction < stop_target → 關泵。
+    # 實際 GPIO 控制在 edge/pump_local.py（Pi 上才有）；其餘環境只 log。
+    pump = None
+    stop_monitor = None
+    if stop_target and stop_target > 0:
+        pump = get_pump()
+        stop_monitor = StopMonitor(
+            target=stop_target, consecutive=stop_frames,
+            mode="below", on_trigger=lambda pred: pump.stop(),
+        )
+        logger.info(
+            "停止監控已啟用: 連續 %d 張 prediction < %.2f 即關泵",
+            stop_frames, stop_target,
+        )
+
+    # 包一層 controller.handle_result：metrics 記錄 + 停止監控 + 原始處理
+    if metrics or stop_monitor:
         original_handle = controller.handle_result
 
-        async def _handle_with_metrics(result):
-            metrics.record_received(result)
+        async def _handle(result):
+            if metrics:
+                metrics.record_received(result)
+            if stop_monitor:
+                pred = result.get("result", {}).get("prediction")
+                stop_monitor.observe(pred)
             await original_handle(result)
 
-        controller.handle_result = _handle_with_metrics
+        controller.handle_result = _handle
     # 範例：註冊偵測到 "person" 時的處理動作
     # async def on_person(det):
     #     logger.info("偵測到人！信心度: %.2f, bbox: %s", det["confidence"], det["bbox"])
@@ -181,6 +212,10 @@ async def run(
         # 建立 WebRTC 連線（此步驟會阻塞直到 data channel open）
         await client.start()
         logger.info("Edge 串流已啟動 (id=%s, fps=%d)", edge.id, edge.capture.fps)
+
+        # 注液開始 → 開泵（啟用停止監控時才管泵；其餘環境只 log）
+        if pump:
+            pump.start()
 
         # ── 主迴圈：擷取 → 前處理 → 傳送 ──
         seq = 0
@@ -232,6 +267,12 @@ async def run(
     except Exception:
         logger.exception("Edge 發生未預期錯誤")
     finally:
+        # 退出時保險關泵（避免 edge 掛掉但泵還在跑）
+        if pump:
+            try:
+                pump.stop()
+            except Exception:
+                logger.exception("關泵失敗")
         capture.release()
         await client.close()
         if metrics:
@@ -288,6 +329,21 @@ if __name__ == "__main__":
             "yes = 影片播完從頭重播；no = 影片播完 edge 自動退出（適合 debug）"
         ),
     )
+    parser.add_argument(
+        "--stop-target",
+        type=float,
+        default=10.0,
+        help=(
+            "停止目標值（預設 10）。當 prediction 連續低於此值時，"
+            "呼叫 pump_stop_action() 觸發停止/控泵動作。設 0 或負數 = 停用。"
+        ),
+    )
+    parser.add_argument(
+        "--stop-frames",
+        type=int,
+        default=5,
+        help="連續幾張 prediction 低於 --stop-target 才觸發（去抖，預設 5）",
+    )
     args = parser.parse_args()
 
     # --metrics auto → 自動產生帶時間戳的目錄名
@@ -301,4 +357,5 @@ if __name__ == "__main__":
     asyncio.run(run(
         args.config, args.mode, args.source, metrics_dir,
         args.loop, args.sample_mode,
+        args.stop_target, args.stop_frames,
     ))

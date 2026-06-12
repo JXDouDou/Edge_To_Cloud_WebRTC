@@ -206,6 +206,116 @@ class KerasModel(BaseModel):
         }
 
 
+class OnnxModel(BaseModel):
+    """ONNX Runtime 模型包裝器（支援 NVIDIA GPU / CUDAExecutionProvider）。
+
+    用途：把訓練好的 Keras `.h5` 轉成 `.onnx` 後，用 onnxruntime-gpu 在
+    「原生 Windows + NVIDIA GPU（如 RTX 5080）」上推論——避開
+    「TensorFlow 原生 Windows GPU 支援已停在 2.10」的死路。
+
+    前處理 / 後處理與 KerasModel 完全相同（BGR 不轉 RGB、resize、/255），
+    回傳結構也一致（prediction + detections），所以兩者可直接互換。
+
+    切回 Keras：把 config 的 `inference.model_type` 改回 "keras"、
+    `model_path` 指回 `.h5` 即可（onnxruntime 與 tensorflow 可並存，不衝突）。
+
+    產生 .onnx：見 scripts/convert_to_onnx.py（會順便比對 keras vs onnx 精度）。
+    """
+
+    def __init__(self, model_path: str, device: str = "cuda", normalize: bool = True):
+        """載入 ONNX 模型。
+
+        Args:
+            model_path: .onnx 模型檔路徑
+            device:     "cuda"（用 GPU，失敗自動 fallback 到 CPU）或 "cpu"
+            normalize:  是否將像素值除以 255.0
+
+        Raises:
+            ImportError:       onnxruntime 未安裝
+            FileNotFoundError: 模型檔不存在
+        """
+        import os as _os
+
+        try:
+            import onnxruntime as ort
+        except ImportError as exc:
+            raise ImportError(
+                "載入 ONNX 模型需要 onnxruntime，請執行：\n"
+                "  pip install onnxruntime-gpu   # 有 NVIDIA GPU（預設）\n"
+                "  pip install onnxruntime       # 純 CPU"
+            ) from exc
+
+        if not _os.path.exists(model_path):
+            raise FileNotFoundError(f"模型檔不存在：{model_path}")
+
+        # 依 device 選 execution provider；CUDA 載入失敗 onnxruntime 會自動退到 CPU
+        if device.lower().startswith("cuda"):
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        else:
+            providers = ["CPUExecutionProvider"]
+
+        self._session = ort.InferenceSession(model_path, providers=providers)
+        active = self._session.get_providers()
+
+        inp = self._session.get_inputs()[0]
+        self._input_name = inp.name
+        self._output_name = self._session.get_outputs()[0].name
+        # tf2onnx 預設保留 NHWC layout：shape = [batch, H, W, C]
+        shape = inp.shape
+        self._input_h = shape[1] if isinstance(shape[1], int) else None
+        self._input_w = shape[2] if isinstance(shape[2], int) else None
+        self._normalize = normalize
+
+        if self._input_h is None or self._input_w is None:
+            raise ValueError(
+                f"ONNX 輸入的空間維度是動態的 {shape}，無法決定 resize 尺寸。"
+                f"請用固定尺寸重新轉檔（見 scripts/convert_to_onnx.py）。"
+            )
+
+        # 確認是否「真的」吃到 GPU——CUDA 載入失敗會靜默 fallback 成 CPU，
+        # 不檢查的話你會以為在跑 GPU、其實在跑 CPU。
+        on_gpu = "CUDAExecutionProvider" in active
+        logger.info(
+            "ONNX 模型已載入: %s | 輸入: (%d, %d, 3) | providers=%s | GPU=%s",
+            model_path, self._input_h, self._input_w, active, on_gpu,
+        )
+        if device.lower().startswith("cuda") and not on_gpu:
+            logger.warning(
+                "⚠️ 要求用 CUDA 但實際 fallback 到 CPU！請確認："
+                "(1) 裝的是 onnxruntime-gpu 不是 onnxruntime；"
+                "(2) CUDA / cuDNN 版本支援此 GPU（RTX 5080 需 CUDA 12.8+）。"
+            )
+
+    def predict(self, jpeg_data: bytes) -> dict:
+        """對 JPEG 影像執行 ONNX 推論（前處理與 KerasModel 完全一致）。"""
+        import numpy as np
+
+        img = cv2.imdecode(
+            np.frombuffer(jpeg_data, np.uint8), cv2.IMREAD_COLOR
+        )
+        if img is None:
+            logger.warning("JPEG 解碼失敗，跳過此幀")
+            return {"detections": [], "prediction": None}
+
+        # Resize 到模型輸入 (W, H)；保持 BGR（與訓練一致，勿轉 RGB）
+        resized = cv2.resize(img, (self._input_w, self._input_h))
+        arr = resized.astype(np.float32)
+        if self._normalize:
+            arr /= 255.0
+        batch = np.expand_dims(arr, axis=0)  # (1, H, W, 3)
+
+        output = self._session.run([self._output_name], {self._input_name: batch})
+        pred_value = float(np.asarray(output[0]).reshape(-1)[0])
+
+        logger.debug("ONNX 推論結果: %.4f", pred_value)
+
+        return {
+            "detections": [],
+            "prediction": pred_value,
+            "image_size": [img.shape[1], img.shape[0]],
+        }
+
+
 class YOLOModel(BaseModel):
     """Ultralytics YOLO 模型包裝器。
 
@@ -277,10 +387,11 @@ def create_model(model_type: str, model_path: str = "", device: str = "cpu") -> 
     Args:
         model_type: 模型類型字串
                     - "dummy": DummyModel（測試用，不需要 GPU 或模型檔）
+                    - "onnx":  OnnxModel（GPU 推論首選；需 onnxruntime-gpu 和 .onnx）
+                    - "keras": KerasModel（CPU fallback；需 tensorflow-cpu 和 .h5）
                     - "yolo":  YOLOModel（需要 ultralytics 套件和 .pt 模型檔）
-                    - "keras": KerasModel（需要 tensorflow-cpu 和 .h5 模型檔）
         model_path: 模型檔案路徑（dummy 模式可留空）
-        device:     推論裝置（"cpu", "cuda" 等；keras 模式目前只用 cpu）
+        device:     推論裝置（"cpu", "cuda" 等；onnx/yolo 會用到，keras 目前只用 cpu）
 
     Returns:
         BaseModel 實例
@@ -291,6 +402,8 @@ def create_model(model_type: str, model_path: str = "", device: str = "cpu") -> 
     if model_type == "dummy":
         logger.info("使用 DummyModel（測試模式）")
         return DummyModel()
+    elif model_type == "onnx":
+        return OnnxModel(model_path, device)
     elif model_type == "yolo":
         return YOLOModel(model_path, device)
     elif model_type == "keras":
@@ -298,5 +411,5 @@ def create_model(model_type: str, model_path: str = "", device: str = "cpu") -> 
     else:
         raise ValueError(
             f"不支援的 model_type: '{model_type}'。"
-            f"可用選項: 'dummy', 'yolo', 'keras'"
+            f"可用選項: 'dummy', 'onnx', 'keras', 'yolo'"
         )

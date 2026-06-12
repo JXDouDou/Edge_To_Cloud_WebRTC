@@ -66,10 +66,22 @@ Header JSON includes `frame_id`, `edge_id`, `seq`. Signaling messages are plain 
 
 ## Inference Models (`inference/model_runner.py`)
 
-Three model types controlled by `inference.model_type` in config:
+Model backend controlled by `inference.model_type` in config:
 - `dummy` — returns fake detections (use for local testing without a GPU)
+- `onnx` — **default / GPU path.** ONNX Runtime with CUDAExecutionProvider (requires `onnxruntime-gpu` and a `.onnx` file). Needed for RTX 5080 on native Windows, where TensorFlow GPU support ended at TF 2.10. Honors `inference.device` (`cuda`/`cpu`); falls back to CPU with a warning if CUDA can't load.
+- `keras` — CPU fallback. TensorFlow `.h5` model (`tensorflow-cpu` + `h5py`).
 - `yolo` — Ultralytics YOLOv8 (requires `ultralytics` package and a `.pt` model file)
-- `custom` — placeholder; subclass `BaseModel` to add a new backend
+
+`onnx` and `keras` share identical pre/post-processing (BGR, resize, /255, regression output), so they are drop-in interchangeable.
+
+**Switching GPU (onnx) ↔ CPU (keras):** change two lines in the inference config:
+```yaml
+inference:
+  model_type: "onnx"     # GPU (default)  | "keras" for CPU fallback
+  model_path: "model.onnx"  # .onnx for onnx | .h5 for keras
+  device: "cuda"         # "cuda" for GPU  | "cpu"
+```
+Generate the `.onnx` from your `.h5` with `python scripts/convert_to_onnx.py <model>.h5` (also verifies keras vs onnx accuracy). Both runtimes coexist, so reverting is just editing the config back.
 
 ## Extensibility Points
 
