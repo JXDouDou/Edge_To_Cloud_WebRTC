@@ -80,7 +80,6 @@ def main():
     def model_fn(x):
         return model(x, training=False)
 
-    concrete_func = model_fn.get_concrete_function()
     tf2onnx.convert.from_function(
         concrete_func,
         input_signature=spec,
