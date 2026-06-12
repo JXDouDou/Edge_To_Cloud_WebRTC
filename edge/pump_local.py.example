@@ -1,0 +1,78 @@
+"""edge/pump_local.py —— Pi 上的「實際泵控制」實作（範本）。
+
+⚠️ 這是範本檔（.example）。正式檔名 edge/pump_local.py 已被 .gitignore，
+   只會存在於你的 Pi 上，永遠不會進 git、不會被 git pull 覆蓋。
+
+────────────────────────────────────────────────────────
+第一次在 Pi 上設定（完全照做即可）：
+
+  1. 進到 edge 專案目錄（你平常跑 edge 的地方），例如：
+       cd ~/Project_Edge
+
+  2. 把這個範本複製成正式檔名：
+       cp edge/pump_local.py.example edge/pump_local.py
+
+  3. 確認 gpiozero 有裝（你 newnewnew 有用就已經有了）：
+       python -c "import gpiozero; print('gpiozero ok')"
+     若沒裝：pip install gpiozero
+
+  4. 如果你的泵不是接在 GPIO18，把下面的 PUMP_PIN 改成你的腳位
+     （對應你 newnewnew 裡的 PWMOutputDevice(18) 那個數字）。
+
+  5. 正常跑 edge 就好，edge/pump.py 會自動載入這個檔：
+       python edge/main.py --config config/staging.yaml --stop-target 10 --stop-frames 5
+
+  跑起來後：
+    - 一開始會看到 RealPump start（開泵）
+    - 連續 5 張 prediction < 10 時 → RealPump stop（關泵）
+    - edge 結束（Ctrl+C / 影片播完）也會自動關泵（保險）
+────────────────────────────────────────────────────────
+
+edge/main.py 會呼叫這三個方法：
+    pump.start()      注液開始 → PWM 全開（value=1.0）
+    pump.set(v)       改變流量 → PWM duty = v（0.0~1.0）
+    pump.stop()       關泵     → value=0.0
+"""
+
+import logging
+
+from gpiozero import PWMOutputDevice
+
+logger = logging.getLogger("edge.pump")
+
+# ── 接線參數（對應你 newnewnew 的 PWMOutputDevice(18, frequency=2000)）──
+PUMP_PIN = 18
+PUMP_FREQUENCY = 2000
+
+
+class RealPump:
+    """用 gpiozero PWM 實際控制泵。"""
+
+    def __init__(self):
+        self._valve = PWMOutputDevice(PUMP_PIN, frequency=PUMP_FREQUENCY)
+        logger.info("RealPump 已初始化 (GPIO%d, %dHz)", PUMP_PIN, PUMP_FREQUENCY)
+
+    def start(self):
+        self._valve.value = 1.0
+        logger.info("RealPump start → value=1.0（開泵）")
+
+    def set(self, value):
+        v = max(0.0, min(1.0, float(value)))   # 夾在 0~1
+        self._valve.value = v
+        logger.info("RealPump set → value=%.2f", v)
+
+    def stop(self):
+        self._valve.value = 0.0
+        logger.warning("RealPump stop → value=0.0（關泵）")
+
+
+# 單例：整個程式共用同一個泵物件（避免重複佔用 GPIO）
+_pump = None
+
+
+def get_pump():
+    """edge/pump.py 會呼叫這個工廠函式。"""
+    global _pump
+    if _pump is None:
+        _pump = RealPump()
+    return _pump
