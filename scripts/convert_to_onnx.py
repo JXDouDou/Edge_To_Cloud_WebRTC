@@ -81,7 +81,7 @@ def main():
         return model(x, training=False)
 
     tf2onnx.convert.from_function(
-        concrete_func,
+        model_fn,
         input_signature=spec,
         opset=args.opset,
         output_path=out_path,
