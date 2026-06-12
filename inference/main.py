@@ -25,23 +25,11 @@ Tailscale 部署注意事項：
     python inference/main.py --config config/prod.yaml
 """
 
-import os
-import sys
-
-if sys.platform == "win32":
-    _nvidia_bins = [
-        r"C:\Code_Inference\Edge_To_Cloud_WebRTC\venv\Lib\site-packages\nvidia\cuda_runtime\bin",
-        r"C:\Code_Inference\Edge_To_Cloud_WebRTC\venv\Lib\site-packages\nvidia\cublas\bin",
-        r"C:\Code_Inference\Edge_To_Cloud_WebRTC\venv\Lib\site-packages\nvidia\cuda_nvrtc\bin",
-        r"C:\Code_Inference\Edge_To_Cloud_WebRTC\venv\Lib\site-packages\nvidia\cudnn\bin",
-    ]
-    for _p in _nvidia_bins:
-        if os.path.isdir(_p):
-            os.add_dll_directory(_p)
 
 import argparse
 import asyncio
 import logging
+import sys
 from pathlib import Path
 
 from aiohttp import web, WSMsgType

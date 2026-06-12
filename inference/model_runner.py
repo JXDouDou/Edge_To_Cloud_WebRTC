@@ -235,7 +235,16 @@ class OnnxModel(BaseModel):
             FileNotFoundError: 模型檔不存在
         """
         import os as _os
-
+        if _os.name == "nt":
+            _nvidia_bins = [
+                r"C:\Code_Inference\Edge_To_Cloud_WebRTC\venv\Lib\site-packages\nvidia\cuda_runtime\bin",
+                r"C:\Code_Inference\Edge_To_Cloud_WebRTC\venv\Lib\site-packages\nvidia\cublas\bin",
+                r"C:\Code_Inference\Edge_To_Cloud_WebRTC\venv\Lib\site-packages\nvidia\cuda_nvrtc\bin",
+                r"C:\Code_Inference\Edge_To_Cloud_WebRTC\venv\Lib\site-packages\nvidia\cudnn\bin",
+            ]
+            for _p in _nvidia_bins:
+                if _os.path.isdir(_p):
+                    _os.add_dll_directory(_p)
         try:
             import onnxruntime as ort
         except ImportError as exc:
