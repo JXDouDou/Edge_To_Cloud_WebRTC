@@ -72,11 +72,20 @@ def main():
     h, w, c = in_shape[1], in_shape[2], in_shape[3]
     print(f"   輸入形狀：(None, {h}, {w}, {c})")
 
-    # ── 轉檔 ──
+     # ── 轉檔 ──
     print(f"🔄 轉換成 ONNX（opset={args.opset}）...")
     spec = (tf.TensorSpec((None, h, w, c), tf.float32, name="input"),)
-    tf2onnx.convert.from_keras(
-        model, input_signature=spec, opset=args.opset, output_path=out_path,
+
+    @tf.function(input_signature=spec)
+    def model_fn(x):
+        return model(x, training=False)
+
+    concrete_func = model_fn.get_concrete_function()
+    tf2onnx.convert.from_function(
+        concrete_func,
+        input_signature=spec,
+        opset=args.opset,
+        output_path=out_path,
     )
     print(f"✅ 已輸出：{out_path}")
 
