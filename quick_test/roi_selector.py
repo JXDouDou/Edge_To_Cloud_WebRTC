@@ -4,14 +4,21 @@
 即時預覽裁切後餵入模型的效果，輸出要貼進 YAML 的座標。
 
 使用方式（專案根目錄執行）：
-  python quick_test/roi_selector.py --model output_model_v1.h5
+  # 即時攝影機（Pi 有 GUI 時最方便，移位後直接重選）
+  python quick_test/roi_selector.py --model output_model_v1.h5 --camera 0
+
+  # 攝影機截圖（headless 或要傳回桌機選）——先用 scripts/grab_frame.py 抓圖
+  python quick_test/roi_selector.py --model output_model_v1.h5 --image roi_frame.png
+
+  # 影片
   python quick_test/roi_selector.py --model output_model_v1.h5 --video edge/video/40.mp4
   python quick_test/roi_selector.py --model output_model_v1.h5 --frame 500   # 跳到第 500 幀
 
 操作說明：
   滑鼠拖曳   → 框選 ROI
+  SPACE      → 凍結 / 恢復畫面（僅攝影機模式，凍結後比較好框）
   r          → 重新選取
-  ← →        → 切換到前/後一幀（找好的幀）
+  ← →        → 切換到前/後一幀（僅影片模式）
   Enter      → 確認並輸出座標
   ESC / q    → 離開
 """
@@ -231,20 +238,21 @@ def main():
     parser = argparse.ArgumentParser(description="互動式 ROI 選取工具")
     parser.add_argument("--model", required=True, help="Keras .h5 模型路徑")
     parser.add_argument("--video", default="edge/video/30.mp4", help="影片路徑")
-    parser.add_argument("--frame", type=int, default=100, help="起始幀（預設第 100 幀）")
+    parser.add_argument("--image", default="", help="單張圖片路徑（給了就用圖片，忽略 --video）")
+    parser.add_argument("--camera", type=int, default=-1,
+                        help="即時攝影機索引（如 0）。給了就用攝影機，優先於 --image/--video")
+    parser.add_argument("--width", type=int, default=1920, help="攝影機寬（預設 1920，配合 edge）")
+    parser.add_argument("--height", type=int, default=1080, help="攝影機高（預設 1080）")
+    parser.add_argument("--frame", type=int, default=100, help="起始幀（影片模式，預設第 100 幀）")
     args = parser.parse_args()
 
     import cv2
 
     model_path = (os.path.join(PROJECT_ROOT, args.model)
                   if not os.path.isabs(args.model) else args.model)
-    video_path = (os.path.join(PROJECT_ROOT, args.video)
-                  if not os.path.isabs(args.video) else args.video)
-
-    for p, n in [(model_path, "模型"), (video_path, "影片")]:
-        if not os.path.exists(p):
-            log("錯誤", f"找不到{n}：{p}")
-            sys.exit(1)
+    if not os.path.exists(model_path):
+        log("錯誤", f"找不到模型：{model_path}")
+        sys.exit(1)
 
     # ── 載入模型 ──
     log("模型", f"載入中：{args.model}（請稍候...）")
@@ -254,16 +262,70 @@ def main():
         model = KerasModel(model_path)
     log("模型", f"輸入尺寸 H×W = {model._input_h}×{model._input_w}")
 
-    # ── 開啟影片 ──
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        log("錯誤", f"無法開啟影片：{video_path}")
-        sys.exit(1)
+    is_camera = args.camera >= 0
+    is_image = (not is_camera) and bool(args.image)
+    cap = None
 
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    log("影片", f"{orig_w}x{orig_h}  共 {total} 幀")
+    if is_camera:
+        # ── 即時攝影機模式（Pi 有 GUI 時最方便）──
+        cap = cv2.VideoCapture(args.camera)
+        if not cap.isOpened():
+            log("錯誤", f"無法開啟攝影機 index={args.camera}")
+            sys.exit(1)
+        # 跟 edge 一致：MJPG + 指定解析度
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+        for _ in range(10):          # 暖機，丟掉前幾幀
+            cap.read()
+        ret, _f = cap.read()
+        if not ret:
+            log("錯誤", "攝影機讀取失敗")
+            sys.exit(1)
+        total = 1
+        orig_h, orig_w = _f.shape[:2]
+        log("攝影機", f"index={args.camera}  {orig_w}x{orig_h}（即時；SPACE 凍結畫面再選）")
+
+        def read_frame(idx):
+            ret, f = cap.read()
+            return f if ret else None
+    elif is_image:
+        # ── 單張圖片模式（攝影機截圖）──
+        img_path = (os.path.join(PROJECT_ROOT, args.image)
+                    if not os.path.isabs(args.image) else args.image)
+        if not os.path.exists(img_path):
+            log("錯誤", f"找不到圖片：{img_path}")
+            sys.exit(1)
+        _img = cv2.imread(img_path)
+        if _img is None:
+            log("錯誤", f"無法讀取圖片：{img_path}")
+            sys.exit(1)
+        total = 1
+        orig_h, orig_w = _img.shape[:2]
+        log("圖片", f"{orig_w}x{orig_h}：{args.image}")
+
+        def read_frame(idx):
+            return _img.copy()
+    else:
+        # ── 影片模式 ──
+        video_path = (os.path.join(PROJECT_ROOT, args.video)
+                      if not os.path.isabs(args.video) else args.video)
+        if not os.path.exists(video_path):
+            log("錯誤", f"找不到影片：{video_path}")
+            sys.exit(1)
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            log("錯誤", f"無法開啟影片：{video_path}")
+            sys.exit(1)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        log("影片", f"{orig_w}x{orig_h}  共 {total} 幀")
+
+        def read_frame(idx):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ret, f = cap.read()
+            return f if ret else None
 
     # 顯示縮放比（讓左欄不超過螢幕高度 720px）
     scale = min(1.0, 720 / orig_h)
@@ -272,13 +334,6 @@ def main():
     print()
 
     frame_idx = max(0, min(args.frame, total - 1))
-
-    # 讀取指定幀
-    def read_frame(idx):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, f = cap.read()
-        return f if ret else None
-
     frame = read_frame(frame_idx)
     if frame is None:
         log("錯誤", "讀取幀失敗")
@@ -289,12 +344,24 @@ def main():
 
     global _roi_start, _roi_end, _drawing
 
+    frozen = False   # 攝影機模式：SPACE 凍結畫面方便框選
+
     while True:
+        # 攝影機即時刷新（未凍結時持續抓新幀）
+        if is_camera and not frozen:
+            live = read_frame(0)
+            if live is not None:
+                frame = live
+
         roi_rect = _get_roi_rect(scale)
         panel = make_preview(frame, model, roi_rect, scale)
 
-        # 幀號標示
-        cv2.putText(panel, f"frame {frame_idx}/{total-1}", (8, panel.shape[0] - 8),
+        # 狀態標示
+        if is_camera:
+            status = "FROZEN (SPACE=unfreeze)" if frozen else "LIVE (SPACE=freeze)"
+        else:
+            status = f"frame {frame_idx}/{total-1}"
+        cv2.putText(panel, status, (8, panel.shape[0] - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 200, 255), 1, cv2.LINE_AA)
 
         # 滑鼠拖曳中：即時畫框（在 panel 的左欄部分）
@@ -310,6 +377,10 @@ def main():
 
         if key in (27, ord("q")):           # ESC / q 離開
             break
+
+        elif key == ord(" ") and is_camera:  # SPACE 凍結/解凍（攝影機模式）
+            frozen = not frozen
+            log("攝影機", "凍結畫面" if frozen else "恢復即時")
 
         elif key == ord("r"):               # 重新選取
             _roi_start = (-1, -1)
@@ -356,7 +427,8 @@ def main():
             log("完成", "座標已輸出，複製上方 YAML 貼入設定檔即可")
             break
 
-    cap.release()
+    if cap is not None:
+        cap.release()
     cv2.destroyAllWindows()
 
 
