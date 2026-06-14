@@ -62,3 +62,7 @@ quick_test/debug_frames/
 
 # ── 其他 ──
 metrics/
+# ROI 對照/截圖暫存（scp 回來的圖、roi_compare.py 輸出）
+roi_compare/
+roi_frame.png
+roi_clip.mp4
