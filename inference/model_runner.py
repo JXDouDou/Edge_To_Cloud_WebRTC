@@ -325,6 +325,150 @@ class OnnxModel(BaseModel):
         }
 
 
+class _SimpleCNN:
+    """建立與 Code/IMG/ 訓練腳本完全一致的 CNN 架構。
+
+    必須與訓練時的 SimpleCNN class 結構完全對齊（conv_layers / fc_layers
+    屬性名稱、層順序），否則 load_state_dict 會 key mismatch。
+    """
+
+    @staticmethod
+    def build(num_channels: int, image_height: int, image_width: int,
+              num_outputs: int = 2):
+        import torch
+        import torch.nn as nn
+
+        class _Net(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv_layers = nn.Sequential(
+                    nn.Conv2d(num_channels, 16, kernel_size=3, padding=1),
+                    nn.ReLU(),
+                    nn.MaxPool2d(kernel_size=2, stride=2),
+                    nn.Conv2d(16, 32, kernel_size=3, padding=1),
+                    nn.ReLU(),
+                    nn.MaxPool2d(kernel_size=2, stride=2),
+                )
+                dummy = torch.randn(1, num_channels, image_height, image_width)
+                conv_out = self.conv_layers(dummy).data.view(1, -1).size(1)
+                self.fc_layers = nn.Sequential(
+                    nn.Flatten(),
+                    nn.Linear(conv_out, 64),
+                    nn.ReLU(),
+                    nn.Linear(64, num_outputs),
+                )
+
+            def forward(self, x):
+                return self.fc_layers(self.conv_layers(x))
+
+        return _Net()
+
+
+class PytorchModel(BaseModel):
+    """PyTorch .pth 模型包裝器（PGML / PINN CNN，支援 NVIDIA GPU）。
+
+    用途：載入 Code/IMG/ 訓練的 SimpleCNN .pth 權重，在 RTX 5080 等
+    NVIDIA GPU 上以 PyTorch CUDA 執行推論——繞過 onnxruntime-gpu
+    在 Blackwell 架構上尚未支援的問題。
+
+    前處理與 KerasModel / OnnxModel 相同（BGR、resize、/255），
+    回傳結構也一致（prediction + detections），可直接互換。
+
+    切回 Keras/ONNX：把 config 的 inference.model_type 改回 "keras"
+    或 "onnx" 即可，不需要移除 torch 套件。
+    """
+
+    def __init__(self, model_path: str, device: str = "cuda",
+                 normalize: bool = True,
+                 input_height: int = 516, input_width: int = 182):
+        import os as _os
+
+        try:
+            import torch
+        except ImportError as exc:
+            raise ImportError(
+                "載入 PyTorch 模型需要 torch，請執行：\n"
+                "  pip install torch --index-url "
+                "https://download.pytorch.org/whl/cu128"
+            ) from exc
+
+        if not _os.path.exists(model_path):
+            raise FileNotFoundError(f"模型檔不存在：{model_path}")
+
+        self._torch = torch
+        self._device = torch.device(
+            device if torch.cuda.is_available() else "cpu"
+        )
+        self._input_h = input_height
+        self._input_w = input_width
+        self._normalize = normalize
+
+        self._model = _SimpleCNN.build(3, input_height, input_width, 2)
+        self._model.load_state_dict(
+            torch.load(model_path, map_location=self._device, weights_only=True)
+        )
+        self._model.to(self._device)
+        self._model.eval()
+
+        on_gpu = self._device.type == "cuda"
+        logger.info(
+            "PyTorch 模型已載入: %s | 輸入: (%d, %d, 3) | device=%s | GPU=%s",
+            model_path, self._input_h, self._input_w, self._device, on_gpu,
+        )
+        if device.lower().startswith("cuda") and not on_gpu:
+            logger.warning(
+                "⚠️ 要求用 CUDA 但 CUDA 不可用，已 fallback 到 CPU！"
+            )
+
+    def predict(self, jpeg_data: bytes) -> dict:
+        """對 JPEG 影像執行 PyTorch 模型推論。
+
+        流程與 KerasModel / OnnxModel 一致：
+        1. JPEG bytes → OpenCV BGR
+        2. Resize 到模型輸入尺寸
+        3. /255 正規化，HWC → CHW（PyTorch NCHW 格式）
+        4. 推論，取出 volume（第一輸出）作為 prediction
+        """
+        import numpy as np
+
+        img = cv2.imdecode(
+            np.frombuffer(jpeg_data, np.uint8), cv2.IMREAD_COLOR
+        )
+        if img is None:
+            logger.warning("JPEG 解碼失敗，跳過此幀")
+            return {"detections": [], "prediction": None}
+
+        # PGML 模型訓練時用 PIL（RGB），而 cv2.imdecode 輸出 BGR，
+        # 必須轉回 RGB 否則預測會完全亂掉。
+        # （Keras/ONNX 模型不需要轉，因為它們訓練時也用 cv2 = BGR）
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        resized = cv2.resize(rgb, (self._input_w, self._input_h))
+        arr = resized.astype(np.float32)
+        if self._normalize:
+            arr /= 255.0
+
+        tensor = self._torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+        tensor = tensor.to(self._device)
+
+        with self._torch.no_grad():
+            output = self._model(tensor)
+
+        pred_volume = float(output[0, 0].cpu().item())
+        pred_height = float(output[0, 1].cpu().item())
+
+        logger.debug(
+            "PyTorch 推論結果: volume=%.4f, height=%.6f",
+            pred_volume, pred_height,
+        )
+
+        return {
+            "detections": [],
+            "prediction": pred_volume,
+            "prediction_height": pred_height,
+            "image_size": [img.shape[1], img.shape[0]],
+        }
+
+
 class YOLOModel(BaseModel):
     """Ultralytics YOLO 模型包裝器。
 
@@ -395,12 +539,13 @@ def create_model(model_type: str, model_path: str = "", device: str = "cpu") -> 
 
     Args:
         model_type: 模型類型字串
-                    - "dummy": DummyModel（測試用，不需要 GPU 或模型檔）
-                    - "onnx":  OnnxModel（GPU 推論首選；需 onnxruntime-gpu 和 .onnx）
-                    - "keras": KerasModel（CPU fallback；需 tensorflow-cpu 和 .h5）
-                    - "yolo":  YOLOModel（需要 ultralytics 套件和 .pt 模型檔）
+                    - "dummy":   DummyModel（測試用，不需要 GPU 或模型檔）
+                    - "pytorch": PytorchModel（PGML CNN；需 torch 和 .pth）
+                    - "onnx":    OnnxModel（需 onnxruntime-gpu 和 .onnx）
+                    - "keras":   KerasModel（CPU fallback；需 tensorflow-cpu 和 .h5）
+                    - "yolo":    YOLOModel（需要 ultralytics 套件和 .pt 模型檔）
         model_path: 模型檔案路徑（dummy 模式可留空）
-        device:     推論裝置（"cpu", "cuda" 等；onnx/yolo 會用到，keras 目前只用 cpu）
+        device:     推論裝置（"cpu", "cuda" 等；pytorch/onnx/yolo 會用到）
 
     Returns:
         BaseModel 實例
@@ -411,6 +556,8 @@ def create_model(model_type: str, model_path: str = "", device: str = "cpu") -> 
     if model_type == "dummy":
         logger.info("使用 DummyModel（測試模式）")
         return DummyModel()
+    elif model_type == "pytorch":
+        return PytorchModel(model_path, device)
     elif model_type == "onnx":
         return OnnxModel(model_path, device)
     elif model_type == "yolo":
@@ -420,5 +567,5 @@ def create_model(model_type: str, model_path: str = "", device: str = "cpu") -> 
     else:
         raise ValueError(
             f"不支援的 model_type: '{model_type}'。"
-            f"可用選項: 'dummy', 'onnx', 'keras', 'yolo'"
+            f"可用選項: 'dummy', 'pytorch', 'onnx', 'keras', 'yolo'"
         )

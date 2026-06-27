@@ -72,20 +72,45 @@ class ROIConfig:
 
 
 @dataclass
+class ROIProfile:
+    """具名 ROI + resize 預設組合，對應一種模型的輸入需求。
+
+    Attributes:
+        name:          識別名稱（如 "keras", "pytorch"），對應 active_profile
+        roi:           該模型要用的 ROI 裁切設定
+        resize_width:  resize 目標寬度，0 = 不 resize（直接送裁切後的尺寸）
+        resize_height: resize 目標高度，0 = 不 resize
+    """
+    name: str = ""
+    roi: ROIConfig = field(default_factory=ROIConfig)
+    resize_width: int = 0
+    resize_height: int = 0
+
+
+@dataclass
 class PreprocessConfig:
     """前處理設定：ROI 裁切 + 可選 resize + JPEG 壓縮。
 
+    支援 ROI profile 切換：在 roi_profiles 定義多組 ROI 預設，
+    用 active_profile 指定當前使用哪一組。切模型時只要改
+    active_profile + inference.model_type 兩個值。
+
+    向後相容：沒設 active_profile 時退回使用頂層 roi / resize_* 欄位。
+
     Attributes:
-        roi:           ROI 裁切設定
-        jpeg_quality:  JPEG 壓縮品質（1-100），越低檔案越小但品質越差
-                       建議值：80（測試）/ 85（生產）
-        resize_width:  resize 目標寬度，設為 0 表示不 resize
-        resize_height: resize 目標高度，設為 0 表示不 resize
+        roi:            ROI 裁切設定（未使用 profile 時的預設值）
+        jpeg_quality:   JPEG 壓縮品質（1-100）
+        resize_width:   resize 目標寬度，0 = 不 resize
+        resize_height:  resize 目標高度，0 = 不 resize
+        roi_profiles:   具名 ROI 預設組合列表
+        active_profile: 當前啟用的 profile 名稱，空字串 = 不使用 profile
     """
     roi: ROIConfig = field(default_factory=ROIConfig)
     jpeg_quality: int = 80
     resize_width: int = 0
     resize_height: int = 0
+    roi_profiles: List[ROIProfile] = field(default_factory=list)
+    active_profile: str = ""
 
 
 @dataclass

@@ -25,11 +25,35 @@ class Preprocessor:
     def __init__(self, config: PreprocessConfig):
         """初始化前處理器。
 
+        如果 config.active_profile 有指定，會從 roi_profiles 中
+        找到對應的 profile，覆寫 ROI 和 resize 設定。
+
         Args:
             config: PreprocessConfig 設定物件，
                     包含 ROI、resize、JPEG 品質等參數
         """
         self.config = config
+
+        if config.active_profile:
+            for p in config.roi_profiles:
+                if p.name == config.active_profile:
+                    config.roi = p.roi
+                    config.resize_width = p.resize_width
+                    config.resize_height = p.resize_height
+                    import logging
+                    logging.getLogger(__name__).info(
+                        "ROI profile '%s': roi=(%d,%d,%d,%d) resize=(%d,%d)",
+                        p.name, p.roi.x, p.roi.y, p.roi.width, p.roi.height,
+                        p.resize_width, p.resize_height,
+                    )
+                    break
+            else:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "active_profile '%s' not found in roi_profiles, "
+                    "using default roi/resize settings",
+                    config.active_profile,
+                )
 
     def process(self, frame: np.ndarray) -> bytes:
         """對單幀影像進行前處理並壓縮為 JPEG。
