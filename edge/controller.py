@@ -93,11 +93,16 @@ class Controller:
         else:
             extra = f"detections={len(detections)}"
 
+        # 端到端延遲（由 webrtc_client 依送出時間算好塞進 payload；沒有就不顯示）
+        latency = result.get("_latency_ms")
+        latency_str = f" latency={latency:.0f}ms" if latency is not None else ""
+
         logger.info(
-            "收到結果: frame=%s, seq=%s, %s",
+            "Result: frame=%s seq=%s %s%s",
             result.get("frame_id", "?"),
             result.get("seq", "?"),
             extra,
+            latency_str,
         )
 
         # 逐一處理每個偵測結果

@@ -87,6 +87,7 @@ class WebRTCClient:
         self._sig_task = None                  # signaling 監聽 task
         self._last_pong_time = 0.0             # 上次收到 PONG 的時間（用於偵測 dispatcher 死掉）
         self._failover_in_progress = False     # failover 是否進行中（防止重複觸發堆積）
+        self._send_ts: dict = {}               # frame_id → 送出時間，用於算每張端到端延遲
 
     # ================================================================
     # 公開 API
@@ -140,6 +141,14 @@ class WebRTCClient:
                 logger.warning("幀太大 (%d bytes)，跳過傳送", len(data))
                 return False
             self._dc.send(data)  # data channel send 是同步方法
+            # 記錄送出時間以便結果回來時算端到端延遲
+            fid = header.get("frame_id")
+            if fid:
+                self._send_ts[fid] = time.time()
+                # 防止未回覆的 frame 累積（保留最近 5000 筆）
+                if len(self._send_ts) > 5000:
+                    for k in list(self._send_ts)[:1000]:
+                        self._send_ts.pop(k, None)
             return True
         except Exception as e:
             logger.error("send_frame 錯誤: %s", e)
@@ -349,6 +358,10 @@ class WebRTCClient:
                 try:
                     msg = Message.deserialize(raw)
                     if msg.type == MsgType.RESULT:
+                        # 用送出時間算端到端延遲，塞進 payload 給 controller 顯示
+                        st = self._send_ts.pop(msg.payload.get("frame_id", ""), None)
+                        if st is not None:
+                            msg.payload["_latency_ms"] = (time.time() - st) * 1000.0
                         asyncio.create_task(self.on_result(msg.payload))
                     elif msg.type == MsgType.PONG:
                         rtt = time.time() - msg.payload.get("ping_ts", 0)

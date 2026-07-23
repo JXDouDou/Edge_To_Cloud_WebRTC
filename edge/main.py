@@ -253,7 +253,7 @@ async def run(
             # 每 30 幀印一次進度（方便確認串流是否正常）
             if seq % 30 == 0:
                 logger.info(
-                    "串流中: seq=%d, jpeg=%d bytes, sent=%s",
+                    "Streaming: seq=%d jpeg=%d bytes sent=%s",
                     seq, len(jpeg), sent,
                 )
             seq += 1

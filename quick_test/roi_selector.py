@@ -3,16 +3,20 @@
 在影片幀上用滑鼠框選感興趣區域（管子），
 即時預覽裁切後餵入模型的效果，輸出要貼進 YAML 的座標。
 
+支援 Keras (.h5) 和 PyTorch/PGML (.pth) 模型，自動依副檔名判斷。
+
 使用方式（專案根目錄執行）：
-  # 即時攝影機（Pi 有 GUI 時最方便，移位後直接重選）
-  python quick_test/roi_selector.py --model output_model_v1.h5 --camera 0
+  # Keras 模型
+  python quick_test/roi_selector.py --model output_model_v1_0.25_ori.h5 --video edge/video/30.mp4
 
-  # 攝影機截圖（headless 或要傳回桌機選）——先用 scripts/grab_frame.py 抓圖
-  python quick_test/roi_selector.py --model output_model_v1.h5 --image roi_frame.png
+  # PyTorch/PGML 模型
+  python quick_test/roi_selector.py --model simple_cnn_pinn_model.pth --video edge/video/30.mp4
 
-  # 影片
-  python quick_test/roi_selector.py --model output_model_v1.h5 --video edge/video/40.mp4
-  python quick_test/roi_selector.py --model output_model_v1.h5 --frame 500   # 跳到第 500 幀
+  # 即時攝影機
+  python quick_test/roi_selector.py --model simple_cnn_pinn_model.pth --camera 0
+
+  # 攝影機截圖（headless Pi）
+  python quick_test/roi_selector.py --model simple_cnn_pinn_model.pth --image roi_frame.png
 
 操作說明：
   滑鼠拖曳   → 框選 ROI
@@ -89,14 +93,15 @@ def _get_roi_rect(scale: float):
     return (x1, y1, w, h)
 
 
-def make_preview(orig_frame, model, roi_rect, scale):
+def make_preview(orig_frame, model, roi_rect, scale, is_pytorch=False):
     """製作即時預覽面板（原始幀 + ROI 方框 + 裁切後 + 模型輸入 + 預測值）。
 
     Args:
         orig_frame: 原始 BGR 幀
-        model:      已載入的 KerasModel（None 代表尚未載入）
+        model:      已載入的 KerasModel 或 PytorchModel（None 代表尚未載入）
         roi_rect:   (x, y, w, h) 或 None
         scale:      顯示縮放比例（原始→顯示）
+        is_pytorch: True = PyTorch/PGML 模型
 
     Returns:
         BGR 面板影像
@@ -163,18 +168,20 @@ def make_preview(orig_frame, model, roi_rect, scale):
                                f"Model input  ({MW}x{MH}px)",
                                f"/255 normalized  → predict")
 
-        # 跑推論
+        # 跑推論（用 JPEG round-trip 模擬真實管線）
         pred_text = "prediction: ..."
         if model is not None:
             try:
-                rgb = cv2.cvtColor(model_in, cv2.COLOR_BGR2RGB)
-                arr = rgb.astype("float32")
-                if model._normalize:
-                    arr /= 255.0
-                import numpy as _np
-                out_val = model._model.predict(_np.expand_dims(arr, 0), verbose=0)
-                pred = float(out_val[0][0])
-                pred_text = f"prediction: {pred:.4f}"
+                ok, jpeg_buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if ok:
+                    result = model.predict(jpeg_buf.tobytes())
+                    pred = result.get("prediction")
+                    if pred is not None:
+                        pred_text = f"prediction: {pred:.4f}"
+                        if is_pytorch:
+                            ph = result.get("prediction_height")
+                            if ph is not None:
+                                pred_text += f"  (h={ph:.4f})"
             except Exception as e:
                 pred_text = f"prediction: ERROR {e}"
 
@@ -236,7 +243,7 @@ def make_preview(orig_frame, model, roi_rect, scale):
 
 def main():
     parser = argparse.ArgumentParser(description="互動式 ROI 選取工具")
-    parser.add_argument("--model", required=True, help="Keras .h5 模型路徑")
+    parser.add_argument("--model", required=True, help="模型路徑 (.h5=Keras, .pth=PyTorch)")
     parser.add_argument("--video", default="edge/video/30.mp4", help="影片路徑")
     parser.add_argument("--image", default="", help="單張圖片路徑（給了就用圖片，忽略 --video）")
     parser.add_argument("--camera", type=int, default=-1,
@@ -254,13 +261,19 @@ def main():
         log("錯誤", f"找不到模型：{model_path}")
         sys.exit(1)
 
-    # ── 載入模型 ──
-    log("模型", f"載入中：{args.model}（請稍候...）")
+    # ── 載入模型（依副檔名判斷 Keras / PyTorch）──
+    is_pytorch = model_path.lower().endswith(".pth")
+    log("模型", f"載入中：{args.model}（{'PyTorch' if is_pytorch else 'Keras'}，請稍候...）")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        from inference.model_runner import KerasModel
-        model = KerasModel(model_path)
-    log("模型", f"輸入尺寸 H×W = {model._input_h}×{model._input_w}")
+        if is_pytorch:
+            from inference.model_runner import PytorchModel
+            model = PytorchModel(model_path, device="cpu")
+        else:
+            from inference.model_runner import KerasModel
+            model = KerasModel(model_path)
+    log("模型", f"輸入尺寸 H×W = {model._input_h}×{model._input_w}"
+        + (" (PGML: ROI 大小應接近此尺寸，不做 resize)" if is_pytorch else ""))
 
     is_camera = args.camera >= 0
     is_image = (not is_camera) and bool(args.image)
@@ -354,7 +367,7 @@ def main():
                 frame = live
 
         roi_rect = _get_roi_rect(scale)
-        panel = make_preview(frame, model, roi_rect, scale)
+        panel = make_preview(frame, model, roi_rect, scale, is_pytorch=is_pytorch)
 
         # 狀態標示
         if is_camera:
@@ -403,14 +416,32 @@ def main():
 
             rx, ry, rw, rh = roi_rect
             print()
-            print("=" * 55)
+            print("=" * 65)
             print("  ROI 座標確認")
-            print("=" * 55)
+            print("=" * 65)
             print(f"  原始幀尺寸：{orig_w} x {orig_h}")
             print(f"  ROI 座標  ：x={rx}  y={ry}  w={rw}  h={rh}")
             print(f"  模型輸入  ：{model._input_w} x {model._input_h}")
+            if is_pytorch and (rw != model._input_w or rh != model._input_h):
+                print(f"  ⚠ PGML 建議 ROI 大小 = {model._input_w}x{model._input_h}，"
+                      f"目前 {rw}x{rh} 會被 resize")
             print()
-            print("  貼進 YAML 的設定（video_test.yaml / h5_test.yaml）：")
+
+            if is_pytorch:
+                profile_name = "pytorch"
+                rw_cfg, rh_cfg = 0, 0
+            else:
+                profile_name = "keras"
+                rw_cfg, rh_cfg = model._input_w, model._input_h
+
+            print("  ── roi_profiles 格式（貼進 staging.yaml / staging_video.yaml）──")
+            print()
+            print(f"      - name: \"{profile_name}\"")
+            print(f"        roi: {{ enabled: true, x: {rx}, y: {ry}, width: {rw}, height: {rh} }}")
+            print(f"        resize_width: {rw_cfg}")
+            print(f"        resize_height: {rh_cfg}")
+            print()
+            print("  ── 舊格式（向後相容）──")
             print()
             print("    preprocess:")
             print("      roi:")
@@ -420,9 +451,9 @@ def main():
             print(f"        width: {rw}")
             print(f"        height: {rh}")
             print("      jpeg_quality: 80")
-            print(f"      resize_width: {model._input_w}")
-            print(f"      resize_height: {model._input_h}")
-            print("=" * 55)
+            print(f"      resize_width: {rw_cfg}")
+            print(f"      resize_height: {rh_cfg}")
+            print("=" * 65)
             print()
             log("完成", "座標已輸出，複製上方 YAML 貼入設定檔即可")
             break

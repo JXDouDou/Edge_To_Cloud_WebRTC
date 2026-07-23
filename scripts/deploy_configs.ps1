@@ -1,145 +1,162 @@
 # ============================================================
-# 一鍵把含 credential 的 config 同步到所有部署機器
+# Deploy env-specific configs (staging.yaml etc) to all machines
 # ============================================================
 #
-# staging.yaml / staging_video.yaml / prod.yaml 在 .gitignore 中，
-# 不能透過 git pull 同步，要用此腳本 scp 推到所有機器。
+# These configs are .gitignored, so they cannot be synced via git pull.
+# This script scp's them to every target machine.
 #
-# 使用方式（在專案根目錄）：
+# Usage (from project root):
 #   powershell -ExecutionPolicy Bypass -File scripts/deploy_configs.ps1
+#   powershell -ExecutionPolicy Bypass -File scripts/deploy_configs.ps1 -Only "EC2 Dispatcher 001"
 #
-# 預設會推下方 $Files 中的所有檔案到所有 $Targets。
-# 如果只想推一台，可加參數 -Only "EC2 Dispatcher 001"
+# NOTE: Only ASCII characters in this script. Windows PowerShell 5.1 reads
+#       .ps1 in system codepage (e.g. CP950) by default. UTF-8 multi-byte
+#       chars in comments can corrupt parsing of nearby variable assignments.
+#       Keep this file ASCII-only to avoid that.
 
 param(
-    [string]$Only = ""    # 留空 = 全部；填名稱 = 只推那一台
+    [string]$Only = ""
 )
 
-# ── 環境變數 ────────────────────────────────────────────────
-# EC2 SSH key 路徑（連 ubuntu@... 用）
-$EC2KeyPath = "C:\Users\Owner\.ssh\my-ec2-key.pem"   # ← 改成你的 .pem 實際位置
+# ── Force UTF-8 console output (so file paths with non-ASCII chars print ok) ──
+chcp 65001 > $null 2>&1
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Pi SSH 設定
-# 你平常從 Windows SSH 進 Pi 用的命令是什麼？把 @ 後面那串填到 $PiHost：
-#   ssh mawatarilab@mawatarilab           → "mawatarilab"
-#   ssh mawatarilab@mawatarilab.local     → "mawatarilab.local"  (mDNS)
-#   ssh mawatarilab@192.168.x.x           → "192.168.x.x"        (LAN IP)
-#   ssh mawatarilab@<tailscale-name>      → 那個 hostname        (Tailscale)
-$PiUser = "mawatarilab"
-$PiHost = "mawatarilab"           # ← 若連不上，依上方註解改
-$PiKeyPath = ""                   # 用密碼登入留空；用 key 才填路徑
+# ────────────────────────────────────────────────────────────
+# CONFIGURATION (edit these to match your environment)
+# ────────────────────────────────────────────────────────────
 
-# Inference 桌機（Windows 上的 OpenSSH server，走 Tailscale）
-$InferenceUser = "user"                          # ← 改成桌機 Windows 帳號名
-$InferenceHost = "mawatarilab-inference"         # Tailscale MagicDNS 名稱
-$InferenceKeyPath = ""                           # 用密碼登入留空
+# EC2 SSH private key path (used for ubuntu@... connections)
+$EC2KeyPath = "C:\Users\Owner\.ssh\aws_key"
 
-# ── 部署目標 ────────────────────────────────────────────────
-$Targets = @(
-    @{
-        Name       = "Pi (Edge)"
-        User       = $PiUser
-        Host       = $PiHost
-        RemotePath = "~/Project_Edge/config/"
-        KeyPath    = $PiKeyPath
-        IsWindows  = $false
-    }
-    @{
-        Name       = "EC2 Signaling"
-        User       = "ubuntu"
-        Host       = "18.178.31.155"
-        RemotePath = "~/Edge_To_Cloud_WebRTC/config/"
-        KeyPath    = $EC2KeyPath
-        IsWindows  = $false
-    }
-    @{
-        Name       = "EC2 Dispatcher 001"
-        User       = "ubuntu"
-        Host       = "57.181.45.231"
-        RemotePath = "~/Edge_To_Cloud_WebRTC/config/"
-        KeyPath    = $EC2KeyPath
-        IsWindows  = $false
-    }
-    @{
-        Name       = "EC2 Dispatcher 002"
-        User       = "ubuntu"
-        Host       = "35.72.149.122"
-        RemotePath = "~/Edge_To_Cloud_WebRTC/config/"
-        KeyPath    = $EC2KeyPath
-        IsWindows  = $false
-    }
-    @{
-        Name       = "Inference (Windows 桌機)"
-        User       = $InferenceUser
-        Host       = $InferenceHost
-        # Windows 路徑：scp 可吃正斜線，比較不會踩到引號跳脫的雷
-        RemotePath = "C:/Code_Inference/Edge_To_Cloud_WebRTC/config/"
-        KeyPath    = $InferenceKeyPath
-        IsWindows  = $true
-    }
-)
-
-# ── 要推送的檔案 ────────────────────────────────────────────
+# Files to upload (relative to project root)
 $Files = @(
     "config\staging.yaml",
     "config\staging_video.yaml"
 )
-# 之後若有 prod.yaml 含敏感資料，加進來:
-#   "config\prod.yaml"
 
-# ── 以下不用改 ──────────────────────────────────────────────
+# Deployment targets - EDIT VALUES HERE DIRECTLY (no variable indirection)
+$Targets = @(
+    @{
+        Name       = "Pi (Edge)"
+        SshUser    = "mawatarilab"
+        # If 'mawatarilab' alone cannot be resolved by Windows DNS,
+        # change to one of:
+        #   "mawatarilab.local"   - mDNS (works on most LANs)
+        #   "192.168.x.x"         - Pi LAN IP (run 'hostname -I' on Pi)
+        #   "<tailscale-name>"    - if Pi has Tailscale installed
+        SshHost    = "mawatarilab-edge"
+        RemotePath = "~/Project_Edge/config/"
+        KeyPath    = ""
+    }
+    @{
+        Name       = "EC2 Signaling"
+        SshUser    = "ubuntu"
+        SshHost    = "18.178.31.155"
+        RemotePath = "~/Edge_To_Cloud_WebRTC/config/"
+        KeyPath    = $EC2KeyPath
+    }
+    @{
+        Name       = "EC2 Dispatcher 001"
+        SshUser    = "ubuntu"
+        SshHost    = "57.181.45.231"
+        # NOTE: Verify with: ssh ubuntu@57.181.45.231 "ls"
+        # If you see "Edge_To_Cloud_WebRTC", change back to that
+        RemotePath = "~/project/config/"
+        KeyPath    = $EC2KeyPath
+    }
+    @{
+        Name       = "EC2 Dispatcher 002"
+        SshUser    = "ubuntu"
+        SshHost    = "35.72.149.122"
+        # NOTE: Verify with: ssh ubuntu@35.72.149.122 "ls"
+        RemotePath = "~/project/config/"
+        KeyPath    = $EC2KeyPath
+    }
+    @{
+        Name       = "Inference (Windows)"
+        SshUser    = "user"
+        SshHost    = "mawatarilab-inference"
+        RemotePath = "C:/Code_Inference/Edge_To_Cloud_WebRTC/config/"
+        KeyPath    = ""
+    }
+)
+
+# ────────────────────────────────────────────────────────────
+# DO NOT EDIT BELOW
+# ────────────────────────────────────────────────────────────
+
 $ErrorActionPreference = "Continue"
 $totalSuccess = 0
 $totalFail = 0
 
 Write-Host ""
-Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "  Config 部署 — 同步到所有機器" -ForegroundColor Cyan
-Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "===============================================" -ForegroundColor Cyan
+Write-Host "  Deploy configs to all machines" -ForegroundColor Cyan
+Write-Host "===============================================" -ForegroundColor Cyan
 Write-Host ""
+
+# Validate EC2 key exists upfront
+if (-not (Test-Path $EC2KeyPath)) {
+    Write-Host "[WARN] EC2 key not found at: $EC2KeyPath" -ForegroundColor Yellow
+    Write-Host "       EC2 targets will likely fail with 'Permission denied (publickey)'" -ForegroundColor Yellow
+    Write-Host ""
+}
 
 foreach ($t in $Targets) {
     if ($Only -and $t.Name -ne $Only) {
         continue
     }
 
-    Write-Host "▶ [$($t.Name)] $($t.User)@$($t.Host)" -ForegroundColor Yellow
-    Write-Host "  目標路徑: $($t.RemotePath)" -ForegroundColor DarkGray
+    $userHost = "$($t.SshUser)@$($t.SshHost)"
+    Write-Host "==> [$($t.Name)] $userHost" -ForegroundColor Yellow
+    Write-Host "    target: $($t.RemotePath)" -ForegroundColor DarkGray
+    if ($t.KeyPath) {
+        Write-Host "    key:    $($t.KeyPath)" -ForegroundColor DarkGray
+    }
 
     foreach ($f in $Files) {
         if (-not (Test-Path $f)) {
-            Write-Host "  ✗ 跳過：本地找不到 $f" -ForegroundColor Red
+            Write-Host "    [SKIP] local file not found: $f" -ForegroundColor Red
             $totalFail++
             continue
         }
 
-        $dest = "$($t.User)@$($t.Host):$($t.RemotePath)"
+        $dest = "${userHost}:$($t.RemotePath)"
+        Write-Host "    scp $f  ->  $dest" -ForegroundColor DarkGray
 
+        # NOTE: do NOT redirect stderr/stdout - that breaks password prompts
         if ($t.KeyPath -and (Test-Path $t.KeyPath)) {
-            scp -i $t.KeyPath -o StrictHostKeyChecking=accept-new $f $dest 2>&1 | Out-Null
+            scp -i $t.KeyPath -o StrictHostKeyChecking=accept-new $f $dest
+        }
+        elseif ($t.KeyPath) {
+            Write-Host "    [SKIP] key path set but file missing: $($t.KeyPath)" -ForegroundColor Red
+            $totalFail++
+            continue
         }
         else {
-            scp -o StrictHostKeyChecking=accept-new $f $dest 2>&1 | Out-Null
+            scp -o StrictHostKeyChecking=accept-new $f $dest
         }
 
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "  ✓ $f" -ForegroundColor Green
+            Write-Host "    [OK]   $f" -ForegroundColor Green
             $totalSuccess++
         }
         else {
-            Write-Host "  ✗ $f (scp exit=$LASTEXITCODE)" -ForegroundColor Red
+            Write-Host "    [FAIL] $f  (scp exit=$LASTEXITCODE)" -ForegroundColor Red
             $totalFail++
         }
     }
     Write-Host ""
 }
 
-Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "  完成: ✓ $totalSuccess 成功, ✗ $totalFail 失敗" -ForegroundColor Cyan
+Write-Host "===============================================" -ForegroundColor Cyan
+Write-Host "  Done: OK=$totalSuccess, FAIL=$totalFail" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  記得到各機器重啟對應的 process（process 是啟動時讀 yaml）：" -ForegroundColor DarkGray
-Write-Host "    EC2 Signaling:    Ctrl+C → python signaling/server.py --config config/staging.yaml" -ForegroundColor DarkGray
-Write-Host "    EC2 Dispatcher×2: Ctrl+C → python dispatcher/main.py --config config/staging.yaml --id dispatcher-ec2-001" -ForegroundColor DarkGray
-Write-Host "    Inference 桌機:    Ctrl+C → python inference/main.py --config config/staging.yaml" -ForegroundColor DarkGray
-Write-Host "    Pi Edge:          Ctrl+C → python edge/main.py --config config/staging.yaml" -ForegroundColor DarkGray
-Write-Host "═══════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "  Restart processes on each machine after deploy:" -ForegroundColor DarkGray
+Write-Host "    EC2 Signaling:    Ctrl+C -> python signaling/server.py --config config/staging.yaml" -ForegroundColor DarkGray
+Write-Host "    EC2 Dispatcher x2:Ctrl+C -> python dispatcher/main.py --config config/staging.yaml --id dispatcher-ec2-001" -ForegroundColor DarkGray
+Write-Host "    Inference:        Ctrl+C -> python inference/main.py --config config/staging.yaml" -ForegroundColor DarkGray
+Write-Host "    Pi Edge:          Ctrl+C -> python edge/main.py --config config/staging.yaml" -ForegroundColor DarkGray
+Write-Host "===============================================" -ForegroundColor Cyan
