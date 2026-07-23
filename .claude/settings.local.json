@@ -34,7 +34,11 @@
       "Bash(python quick_test/_matrix_test.py)",
       "Bash(python quick_test/debug_inference.py --model output_model_v1_0.25_ori.h5 --video edge/video/40.mp4 --frames 3 --skip 30)",
       "Bash(python quick_test/_reference_test.py)",
-      "Bash(python quick_test/_full_pipeline_test.py)"
+      "Bash(python quick_test/_full_pipeline_test.py)",
+      "PowerShell(python -m py_compile edge/metrics.py dispatcher/main.py)",
+      "PowerShell(if \\($?\\) { \"OK\" })",
+      "Bash(ls D:/ | grep -i code)",
+      "PowerShell(Get-ChildItem D:\\\\ -Directory | Where-Object { $_.Name -match 'code' } | Select-Object FullName)"
     ]
   }
 }
